@@ -165,3 +165,33 @@ Bahas:
 ## Transparansi kunci demo
 Halaman Berkas menampilkan kunci AES, DES, dan RC4 yang benar-benar dipakai oleh modul crypto.py, dalam HEX beserta panjangnya. Tombol Salin menyalin nilai HEX; jika clipboard browser tidak tersedia, kolom dipilih untuk disalin manual. Halaman membutuhkan login dan dikirim dengan Cache-Control: no-store.
 Kunci pada implementasi ini bersifat tetap dan dipakai bersama semua akun. Pembatasan kepemilikan berlaku di endpoint aplikasi, tetapi pengetahuan kunci memungkinkan dekripsi ciphertext yang diperoleh di luar aplikasi. Fitur ini ditujukan untuk demonstrasi tugas dengan data simulasi, bukan isolasi kriptografis per akun.
+
+## Halaman Evaluasi Developer
+
+URL: http://127.0.0.1:5000/developer/evaluation
+
+Akses membutuhkan login dan username yang diizinkan administrator. Untuk mengaktifkan pada PowerShell di folder proyek, sesuaikan nama dengan akun aplikasi yang sudah Anda daftarkan:
+
+```powershell
+$env:DEVELOPER_USERNAMES = "username_anda"
+python run.py
+```
+
+Beberapa developer dapat dipisahkan koma. Konfigurasi dibaca saat aplikasi mulai; restart proses setelah mengubahnya. Tanpa konfigurasi ini, halaman mengembalikan HTTP 403 dan menu developer tidak tampil. Pendaftaran akun biasa tidak memberikan akses developer. Variabel ini berlaku pada terminal yang digunakan menjalankan server.
+
+Fitur evaluasi:
+- Sampel sintetis 1 KiB, 64 KiB, 1 MiB, atau 4 MiB; atau unggah berkas hingga 16 MiB.
+- 5–100 pengulangan, dua pemanasan, urutan cipher acak dengan seed yang dilaporkan.
+- Median/rata-rata/minimum/maksimum/simpangan baku/P95/CV waktu enkripsi dan dekripsi, serta throughput MiB/s.
+- Ukuran plaintext, ciphertext, IV, padding, dan paket .enc berikut persentase pertambahannya.
+- Kesamaan byte dan SHA-256 tiap pengulangan; hash probe akhir juga ditampilkan.
+- Uji enkripsi dua kali, modifikasi satu bit pada ciphertext mentah dan paket .enc, serta kunci dekripsi salah.
+- 22 pemeriksaan akses menggunakan endpoint aplikasi pada database sementara dengan dua akun sintetis. Pemeriksaan memakai sesi uji; registrasi/login nyata tetap diverifikasi oleh work/verify.py. File dan database pengguna tidak dipakai oleh audit ini.
+- Interpretasi yang menjelaskan hasil terukur, batas keamanan CBC/RC4, HMAC, kunci bersama, dan kaitannya dengan CV, profil, serta video.
+- Ekspor JSON dengan seluruh sampel waktu dan lingkungan eksekusi. Tombol ekspor menjalankan pengukuran baru; angka dapat berbeda dari laporan HTML sebelumnya.
+
+Durasi diukur dengan perf_counter_ns di memori. Inisialisasi cipher, IV acak/padding, dan unpadding termasuk; upload, disk, database, verifikasi hash, dan rendering dikecualikan. Throughput = ukuran plaintext dalam MiB / median detik. P95 memakai nearest-rank, CV memakai simpangan baku sampel / rata-rata. Dua pemanasan tidak dimasukkan dalam statistik. Batas volume 256 MiB per cipher (ukuran × (pengulangan + 2)) dan batas 20 detik loop pengukuran mencegah pekerjaan berlebihan; input terlalu besar ditolak, tidak dipotong untuk dibandingkan. Batas waktu diperiksa setiap putaran, bukan pembatalan keras operasi yang sedang berjalan.
+
+Data unggahan hanya dipakai di memori, hasil tidak disimpan server; laporan tidak memuat plaintext atau kunci. Audit akses membuat fixture dalam work/evaluation-* dan membersihkannya setelah selesai. Sampel sintetis merepresentasikan ukuran data, bukan format dokumen/video yang valid. Ulangi sesi pada perangkat dan berkas representatif yang sama sebelum menyimpulkan perbedaan performa. Hasil keamanan adalah probe terbatas, bukan bukti kepatuhan UU PDP atau ketahanan terhadap semua serangan.
+
+Pengujian tambahan: work/test_evaluation.py memeriksa statistik, batas ukuran/pengulangan, pemulihan di batas blok, determinisme, penolakan paket berubah, akses developer, CSRF, laporan HTML/JSON, dan unggahan. Jalankan dari folder proyek menggunakan Python dengan dependensi requirements.txt.

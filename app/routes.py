@@ -463,3 +463,72 @@ def benchmark_page():
         size=size,
         repeats=repeats
     )
+
+
+# Developers are explicitly allowlisted by the server operator, never by form input.
+def is_developer():
+    allowed = current_app.config.get("DEVELOPER_USERNAMES", ())
+    return logged_in() and session.get("username") in allowed
+
+
+@bp.app_context_processor
+def developer_navigation():
+    return {"developer_enabled": is_developer()}
+
+
+@bp.route("/developer/evaluation", methods=["GET", "POST"])
+def developer_evaluation():
+    from datetime import datetime, timezone, timedelta
+    from .evaluation import evaluate, audit_authorization, MAX_INPUT
+
+    if not logged_in():
+        return redirect(url_for("main.login"))
+    if not is_developer():
+        return render_template("developer_denied.html"), 403
+    # Request-specific limit; normal candidate uploads keep their existing limit.
+    request.max_content_length = MAX_INPUT + 1024 * 1024
+    token = session.setdefault("evaluation_csrf", secrets.token_urlsafe(32))
+    report, error = None, None
+    repeats = 30
+    source = "sample"
+    sample_size = "65536"
+    if request.method == "POST":
+        if not secrets.compare_digest(request.form.get("csrf_token", "").encode("utf-8"), token.encode("utf-8")):
+            return "Token formulir tidak valid. Muat ulang halaman evaluasi.", 400
+        try:
+            repeats = int(request.form.get("repeats", "30"))
+            source = request.form.get("source", "sample")
+            sample_size = request.form.get("sample_size", "65536")
+            mime_type = "application/octet-stream"
+            if source == "sample":
+                sizes = {"1024", "65536", "1048576", "4194304"}
+                if sample_size not in sizes:
+                    raise ValueError("Ukuran sampel tidak valid.")
+                import random
+                data = random.Random(2026).randbytes(int(sample_size))
+                filename = f"synthetic-{sample_size}.bin"
+            elif source == "upload":
+                uploaded = request.files.get("file")
+                if not uploaded or not uploaded.filename:
+                    raise ValueError("Pilih file untuk diuji.")
+                filename = secure_filename(uploaded.filename) or "evaluation.bin"
+                mime_type = uploaded.mimetype or "application/octet-stream"
+                data = uploaded.read(MAX_INPUT + 1)
+            else:
+                raise ValueError("Sumber pengujian tidak valid.")
+            report = evaluate(data, filename, repeats, mime_type=mime_type)
+            report["authorization"] = audit_authorization(os.path.dirname(current_app.root_path))
+            report["generated_at"] = datetime.now(timezone(timedelta(hours=7))).isoformat()
+            if request.form.get("output") == "json":
+                response = current_app.response_class(
+                    json.dumps(report, ensure_ascii=False, indent=2), mimetype="application/json")
+                response.headers["Content-Disposition"] = 'attachment; filename="evaluasi-cipher.json"'
+                response.headers["Cache-Control"] = "no-store"
+                return response
+        except (ValueError, OverflowError) as exc:
+            error = str(exc)
+    response = current_app.make_response(render_template(
+        "developer_evaluation.html", report=report, error=error, csrf_token=token,
+        repeats=repeats, source=source, sample_size=sample_size))
+    response.headers["Cache-Control"] = "no-store"
+    return response

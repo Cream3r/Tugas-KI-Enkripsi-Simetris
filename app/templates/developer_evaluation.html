@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% macro ms(value) %}{{ "%.4f"|format(value) }}{% endmacro %}
+{% block content %}
+<div class="evaluation-heading"><p class="eyebrow">DEVELOPER / LAB KRIPTOGRAFI</p><h1>Evaluasi cipher</h1><p class="note">Ukur performa, penyimpanan, keutuhan, dan perilaku keamanan AES, DES, serta RC4 pada input yang sama.</p></div>
+<section class="card">
+  <h2>Konfigurasi pengujian</h2>
+  <form method="post" enctype="multipart/form-data" id="evaluation-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="evaluation-form-grid">
+      <div><label for="source">Sumber data</label><select id="source" name="source"><option value="sample" {% if source == 'sample' %}selected{% endif %}>Sampel sintetis yang dapat diulang</option><option value="upload" {% if source == 'upload' %}selected{% endif %}>Unggah berkas sendiri</option></select></div>
+      <div><label for="sample-size">Ukuran sampel sintetis</label><select id="sample-size" name="sample_size">{% for value, label in [('1024','1 KiB · profil kecil'),('65536','64 KiB · dokumen kecil'),('1048576','1 MiB · pindaian'),('4194304','4 MiB · berkas besar')] %}<option value="{{ value }}" {% if sample_size == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <div><label for="test-file">Berkas pengujian (untuk sumber unggahan)</label><input id="test-file" type="file" name="file" aria-describedby="input-help"></div>
+      <div><label for="repeats">Pengulangan per cipher</label><input id="repeats" name="repeats" type="number" min="5" max="100" value="{{ repeats }}" required></div>
+    </div>
+    <p id="input-help" class="note">Gunakan profil JSON, KTP simulasi, PDF, Word, Excel, atau video. Maksimal 16 MiB; total ukuran × (pengulangan + 2 pemanasan) maksimal 256 MiB per cipher. Sampel sintetis mewakili ukuran, bukan dokumen/video yang dapat dibuka.</p>
+    <div class="evaluation-buttons"><button type="submit" name="output" value="html">Jalankan & lihat hasil</button><button class="secondary" type="submit" name="output" value="json">Jalankan & unduh JSON</button></div>
+    <p class="note" id="evaluation-progress" role="status" aria-live="polite"></p>
+  </form>
+  {% if error %}<div class="evaluation-error" role="alert">{{ error }}</div>{% endif %}
+  <details><summary>Metode dan batas interpretasi</summary><ul class="note"><li>Dua pemanasan per cipher, lalu urutan AES/DES/RC4 diacak pada setiap pengulangan dengan seed 2026.</li><li>Waktu memakai perf_counter_ns, meliputi inisialisasi cipher, IV acak dan padding. Dekripsi meliputi unpadding. Hash diperiksa di luar interval waktu.</li><li>Upload, disk, database, jaringan, rendering, dan uji keamanan tidak masuk statistik waktu cipher.</li><li>Untuk perbandingan andal, tutup beban latar, gunakan perangkat dan input yang sama, lalu ulangi beberapa sesi. P95 pada sedikit pengulangan memiliki resolusi terbatas.</li><li>Data unggahan hanya digunakan di memori untuk laporan; laporan tidak disimpan server. Uji otorisasi menggunakan fixture sementara, bukan database atau file pengguna.</li><li>Ekspor JSON menjalankan pengujian baru dan menyertakan seluruh sampel waktu. Hindari nama file sensitif saat membagikan laporan.</li></ul></details>
+</section>
+{% if report %}
+<section class="card" id="evaluation-results">
+  <h2>Ringkasan pengujian</h2>
+  <p><strong>{{ report.filename }}</strong> · {{ report.size|filesizeformat(binary=True) }} ({{ report.size }} byte) · {{ report.repeats }} pengulangan/cipher</p>
+  <p class="note">{{ report.generated_at }} · {{ report.warmups }} pemanasan · seed {{ report.seed }} · proses ukur & probe cipher {{ "%.3f"|format(report.elapsed_seconds) }} detik (tidak termasuk audit akses).</p>
+  <div class="table-scroll"><table><caption>Lingkungan eksekusi</caption><tbody>{% for key, value in report.environment.items() %}<tr><th scope="row">{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="card">
+  <h2>1. Waktu & throughput</h2>
+  <p class="note">Median adalah nilai tengah; throughput dihitung dari ukuran plaintext dibagi median waktu. MiB = 1.048.576 byte.</p>
+  <div class="table-scroll"><table><caption>Performa enkripsi dan dekripsi</caption><thead><tr><th scope="col">Cipher</th><th scope="col">Operasi</th><th scope="col">Median (ms)</th><th scope="col">Rata-rata (ms)</th><th scope="col">Throughput (MiB/s)</th></tr></thead><tbody>
+  {% for row in report.rows %}{% for field, label in [('encrypt','Enkripsi'),('decrypt','Dekripsi')] %}{% set stats = row[field] %}<tr><th scope="row">{{ row.name }} · {{ row.mode }}</th><td>{{ label }}</td><td>{{ ms(stats.median_ms) }}</td><td>{{ ms(stats.mean_ms) }}</td><td>{{ "%.2f"|format(stats.throughput_mib_s) }}</td></tr>{% endfor %}{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="card">
+  <h2>2. Konsistensi waktu</h2>
+  <p class="note">Simpangan baku menunjukkan sebaran; CV = simpangan baku ÷ rata-rata. Nilai CV tinggi berarti waktu lebih bervariasi. P95 memakai metode nearest-rank.</p>
+  <div class="table-scroll"><table><caption>Sebaran durasi tiap operasi</caption><thead><tr><th>Cipher</th><th>Operasi</th><th>Minimum (ms)</th><th>Maksimum (ms)</th><th>Simpangan baku (ms)</th><th>P95 (ms)</th><th>CV (%)</th></tr></thead><tbody>
+  {% for row in report.rows %}{% for field, label in [('encrypt','Enkripsi'),('decrypt','Dekripsi')] %}{% set stats = row[field] %}<tr><th scope="row">{{ row.name }}</th><td>{{ label }}</td><td>{{ ms(stats.min_ms) }}</td><td>{{ ms(stats.max_ms) }}</td><td>{{ ms(stats.stdev_ms) }}</td><td>{{ ms(stats.p95_ms) }}</td><td>{{ "%.2f"|format(stats.cv_percent) }}</td></tr>{% endfor %}{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="card">
+  <h2>3. Ukuran penyimpanan</h2>
+  <div class="table-scroll"><table><caption>Ukuran ciphertext dan paket ekspor .enc</caption><thead><tr><th>Cipher</th><th>Asli (byte)</th><th>Ciphertext (byte)</th><th>Padding (byte / %)</th><th>IV (byte)</th><th>Paket .enc (byte)</th><th>Tambahan paket vs asli</th></tr></thead><tbody>
+  {% for row in report.rows %}<tr><th scope="row">{{ row.name }}</th><td>{{ report.size }}</td><td>{{ row.ciphertext_bytes }}</td><td>{{ row.raw_overhead_bytes }} / {{ "%.2f"|format(row.raw_overhead_percent) }}%</td><td>{{ row.iv_bytes }}</td><td>{{ row.package_bytes }}</td><td>{{ row.package_overhead_bytes }} byte / {{ "%.2f"|format(row.package_overhead_percent) }}%</td></tr>{% endfor %}
+  </tbody></table></div>
+  <p class="note">IV dicatat terpisah dari ciphertext mentah dan sudah dimuat dalam paket .enc. Paket mencakup metadata, Base64, dan HMAC; bukan ukuran penyimpanan total database maupun ekspor gambar. Penyimpanan aplikasi membuat ketiga ciphertext sekaligus.</p>
+</section>
+<section class="card">
+  <h2>4. Keutuhan hasil dekripsi</h2>
+  <p class="note">Setiap pengulangan membandingkan byte dan SHA-256. Semua harus cocok agar pemulihan dinyatakan utuh.</p>
+  <div class="table-scroll"><table><caption>Verifikasi data kembali persis sama</caption><thead><tr><th>Cipher</th><th>Pengulangan utuh</th><th>SHA-256 asli</th><th>SHA-256 hasil dekripsi probe akhir</th></tr></thead><tbody>{% for row in report.rows %}<tr><th scope="row">{{ row.name }}</th><td><span class="badge {% if row.correct_count != report.repeats %}bad{% endif %}">{{ row.correct_count }} / {{ report.repeats }}</span></td><td><code class="digest">{{ row.original_sha256 }}</code></td><td><code class="digest">{{ row.restored_sha256 }}</code></td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="card">
+  <h2>5. Perilaku keamanan cipher</h2>
+  <p class="note">Setiap probe berikut dilakukan sekali per cipher pada input uji. Ini pengamatan perilaku implementasi, bukan pembuktian keamanan kriptografis.</p>
+  <div class="table-scroll"><table><caption>Hasil probe determinisme, perubahan data, dan kunci salah</caption><thead><tr><th>Cipher</th><th>Enkripsi input sama dua kali</th><th>IV kedua</th><th>Ciphertext mentah diubah 1 bit</th><th>Paket .enc diubah 1 bit</th><th>Dekripsi dengan kunci salah</th></tr></thead><tbody>
+  {% for row in report.rows %}<tr><th scope="row">{{ row.name }}</th><td>{{ 'Ciphertext sama' if row.same_ciphertext else 'Ciphertext berbeda' }}</td><td>{{ 'Tidak digunakan' if row.name == 'RC4' else ('Sama' if row.same_iv else 'Berbeda') }}</td><td>{{ 'Error dekripsi/padding; bukan autentikasi' if row.raw_tamper_rejected else ('Mengembalikan byte asli' if row.raw_tamper_equals_original else 'Mengembalikan byte berubah tanpa error') }}</td><td>{{ 'Ditolak oleh HMAC' if row.package_tamper_rejected else 'Tidak ditolak' }}</td><td>{{ 'Error dekripsi/padding' if row.wrong_key.rejected else ('Sama dengan asli' if row.wrong_key.equals_original else 'Byte berbeda tanpa error') }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="card">
+  <h2>6. Otorisasi aplikasi</h2>
+  <p class="note">Permintaan HTTP dijalankan melalui Flask test client pada route aplikasi yang sama dengan dua akun sintetis dan database sementara. Audit ini memeriksa endpoint, bukan serangan jaringan atau pengelolaan kunci.</p>
+  <div class="table-scroll"><table><caption>Uji akses pemilik, akun lain, dan pengguna tanpa login</caption><thead><tr><th>Pengujian</th><th>Harapan</th><th>HTTP aktual</th><th>Hasil</th></tr></thead><tbody>{% for check in report.authorization %}<tr><th scope="row">{{ check.label }}</th><td>{{ check.expected }}</td><td>{{ check.actual }}</td><td><span class="badge {% if not check.passed %}bad{% endif %}">{{ 'Lulus' if check.passed else 'Gagal' }}</span></td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="card interpretation"><h2>Interpretasi untuk Berkas Kandidat</h2><ul>{% for paragraph in report.interpretation %}<li>{{ paragraph }}</li>{% endfor %}</ul><p class="note">Perluas eksperimen laporan dengan beberapa ukuran dan jenis berkas. Kecepatan atau ukuran lebih kecil tidak dapat digunakan sebagai bukti bahwa cipher lebih aman.</p></section>
+{% endif %}
+<script src="{{ url_for('static', filename='evaluation.js') }}" defer></script>
+{% endblock %}
