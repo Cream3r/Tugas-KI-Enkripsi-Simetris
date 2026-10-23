@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}<h1>Data pribadi pelamar</h1><p class="note">Simpan identitas dan kontak untuk menyiapkan lamaran kerja. Hanya akun Anda yang dapat mengambil kembali data ini.</p><section class="card">
+<h2>Identitas & kontak</h2>
+<form method="post" action="{{ url_for('main.save_personal') }}">
+    <label for="full_name">Nama lengkap</label>
+<input id="full_name" name="full_name" required>
+
+    <label for="birth_date">Tanggal lahir</label>
+<input id="birth_date" name="birth_date" type="date">
+
+    <label for="phone">Telepon</label>
+<input id="phone" name="phone">
+
+    <label for="email">Email</label>
+<input id="email" name="email" type="email">
+
+    <label for="address">Alamat</label>
+<textarea id="address" name="address"></textarea>
+
+    <button>Enkripsi & simpan</button>
+</form>
+</section>
+
+<section class="card">
+<h2>Data tersimpan</h2>
+{% if personal %}
+<div class="table-scroll"><table>
+<tr><th>ID</th><th>Disimpan</th><th>Unduh JSON asli</th></tr>
+{% for item in personal %}
+<tr>
+<td>{{ item.id }}</td>
+<td>{{ item.created_at }}</td>
+<td>
+<a href="{{ url_for('main.download_personal', item_id=item.id, algorithm='aes') }}">AES</a>
+<a href="{{ url_for('main.download_personal', item_id=item.id, algorithm='des') }}">DES</a>
+<a href="{{ url_for('main.download_personal', item_id=item.id, algorithm='rc4') }}">RC4</a>
+</td>
+</tr>
+{% endfor %}
+</table></div>
+{% else %}
+<p>Belum ada data pribadi.</p>
+{% endif %}
+</section>
+
+{% endblock %}

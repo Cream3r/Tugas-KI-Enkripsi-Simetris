@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+<h1>Benchmark</h1>
+<p>Bandingkan waktu enkripsi dan dekripsi berkas lamaran dengan ketiga algoritma.</p>
+
+<form method="post" enctype="multipart/form-data">
+    <label>File pengujian</label>
+    <input type="file" name="file" required>
+
+    <label>Pengulangan</label>
+    <input type="number" name="repeats" min="1" max="1000" value="{{ repeats }}">
+
+    <button>Jalankan benchmark</button>
+</form>
+</div>
+
+{% if results %}
+<div class="card">
+<h2>Hasil</h2>
+<p>Ukuran file: {{ size }} bytes</p>
+<div class="table-scroll"><table>
+<tr>
+<th>Algorithm</th>
+<th>Encryption Avg (ms)</th>
+<th>Decryption Avg (ms)</th>
+<th>Ciphertext Size</th>
+</tr>
+{% for algorithm, result in results.items() %}
+<tr>
+<td>{{ algorithm }}</td>
+<td>{{ "%.6f"|format(result.encryption_avg_ms) }}</td>
+<td>{{ "%.6f"|format(result.decryption_avg_ms) }}</td>
+<td>{{ result.ciphertext_size }} bytes</td>
+</tr>
+{% endfor %}
+</table></div>
+</div>
+{% endif %}
+{% endblock %}

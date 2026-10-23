@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Berkas lamaran Anda</h1>
+  <details class="privacy"><summary>Mengapa berkas lamaran bersifat privat?</summary><p class="note">Nama, kontak, alamat, tanggal lahir, nomor identitas pada KTP, riwayat kerja dalam CV, serta wajah dan suara pada video dapat mengidentifikasi pelamar. Aplikasi memperlakukan seluruh isinya sebagai privat untuk mengurangi risiko pencurian identitas dan penyalahgunaan lamaran. Dasar klasifikasi: definisi data pribadi dan jenis data dalam Pasal 1 dan 4 UU No. 27 Tahun 2022; prinsip pembatasan tujuan dan pengamanan dalam Pasal 16.</p><p class="note"><a href="https://jdih.komdigi.go.id/produk_hukum/view/id/832/t/crc32/" target="_blank" rel="noopener noreferrer">Baca UU Pelindungan Data Pribadi</a>. Simpan hanya data yang diperlukan untuk lamaran. Proyek ini menggunakan DES dan RC4 untuk pembelajaran, sehingga gunakan data simulasi.</p></details>
+  <section class="panel">
+    <h2>Simpan berkas lamaran</h2><p class="note">Untuk pelamar kerja: simpan pindaian KTP, CV dan dokumen Word/Excel/PDF, atau video perkenalan. Berkas ini privat karena dapat mengungkap identitas, kontak, riwayat kerja, dan wajah Anda.</p>
+    <form action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" required aria-label="Pilih file untuk dienkripsi" accept=".png,.jpg,.jpeg,.webp,.pdf,.doc,.docx,.xls,.xlsx,.mp4,.avi,.mov,.mkv,.webm">
+      <button type="submit">Enkripsi & simpan</button>
+    </form>
+    <p class="note">Gambar terenkripsi tampil sebagai pola acak dengan ekstensi asal. File .enc dapat didekripsi kembali untuk semua format yang didukung. Dokumen dan video terenkripsi memakai .enc karena data terenkripsi tidak dapat langsung dibuka sebagai dokumen atau video.</p>
+  </section>
+  <section class="panel key-panel" aria-labelledby="key-heading">
+    <h2 id="key-heading">Kunci enkripsi yang digunakan</h2>
+    <p class="note">Nilai HEX di bawah adalah kunci asli yang digunakan untuk mengenkripsi dan mendekripsi berkas. Dua karakter HEX mewakili satu byte.</p>
+    <p class="note">Pada versi tugas ini, kunci demo tetap dipakai bersama oleh semua akun, bukan kunci pribadi per pengguna. Gunakan data simulasi; siapa pun yang memiliki kunci dan ciphertext dapat mendekripsi data di luar aplikasi.</p>
+    {% for key in encryption_keys %}
+    <div class="key-row">
+      <label for="key-{{ key.id }}">{{ key.name }} <span class="note">· {{ key.size }}</span></label>
+      <div class="key-control">
+        <input id="key-{{ key.id }}" class="key-value" type="text" value="{{ key.hex }}" readonly spellcheck="false" autocomplete="off" aria-label="Kunci {{ key.name }} dalam HEX">
+        <button type="button" class="copy-key" data-copy-target="key-{{ key.id }}" aria-label="Salin kunci {{ key.name }}">Salin</button>
+      </div>
+    </div>
+    {% endfor %}
+    <p id="key-copy-status" class="note" role="status" aria-live="polite"></p>
+    <p class="note">AES dan DES juga menggunakan IV acak per berkas. IV disertakan dalam file .enc dan bukan bagian dari kunci. RC4 tidak menggunakan IV pada implementasi ini.</p>
+  </section>
+  {% for file in files %}
+  {% set extension = file['original_name'].rsplit('.', 1)[-1]|lower %}
+  {% set is_image = extension in ['png', 'jpg', 'jpeg', 'webp'] %}
+  <article>
+    <h2>{{ file['original_name'] }}</h2><p class="note">{{ file['original_size'] }} byte · {{ file['created_at'] }}</p>
+    <details><summary>Unduh hasil & pratinjau</summary><div class="algorithms">
+    {% for algorithm in ['aes', 'des', 'rc4'] %}
+      <div class="algorithm">
+        <h3>{{ algorithm|upper }}</h3>
+        <div class="actions">
+          {% if is_image %}<a href="{{ url_for('main.download_encrypted_file', file_id=file['id'], algorithm=algorithm, format='image') }}">Unduh gambar terenkripsi</a>{% endif %}
+          <a href="{{ url_for('main.download_encrypted_file', file_id=file['id'], algorithm=algorithm, format='enc') }}">Unduh .enc</a>
+          <a href="{{ url_for('main.download_file', file_id=file['id'], algorithm=algorithm) }}">Decrypt & unduh asli</a>
+        </div>
+        {% if is_image %}
+        <details><summary>Lihat gambar terenkripsi</summary>
+          <img loading="lazy" src="{{ url_for('main.download_encrypted_file', file_id=file['id'], algorithm=algorithm, format='image', inline=1) }}" alt="Pola acak hasil enkripsi {{ algorithm|upper }}">
+        </details>
+        <details><summary>Lihat hasil dekripsi</summary>
+          <img loading="lazy" src="{{ url_for('main.download_file', file_id=file['id'], algorithm=algorithm, inline=1) }}" alt="Gambar asli setelah dekripsi {{ algorithm|upper }}">
+        </details>
+        {% endif %}
+      </div>
+    {% endfor %}
+    </div></details>
+  </article>
+  {% else %}<p>Belum ada file. Unggah file untuk mulai mengenkripsi.</p>{% endfor %}
+
+  <script src="{{ url_for('static', filename='keys.js') }}" defer></script>
+{% endblock %}

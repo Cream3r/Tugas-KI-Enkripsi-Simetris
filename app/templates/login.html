@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card small">
+<h1>Masuk</h1>
+<form method="post">
+    <label for="username">Username</label>
+    <input id="username" autocomplete="username" name="username" required>
+
+    <label for="password">Password</label>
+    <input id="password" autocomplete="current-password" name="password" type="password" required>
+
+    <button>Masuk</button>
+</form>
+<p>Belum punya akun? <a href="{{ url_for('main.register') }}">Daftar</a></p>
+</div>
+{% endblock %}

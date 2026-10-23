@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="card">
+    <h1>Kembalikan berkas asli</h1>
+
+    <p class="note">Dekripsi hanya tersedia untuk berkas milik akun Anda yang masih tersimpan di aplikasi.</p><p>Unggah file <strong>.enc</strong> atau <strong>gambar terenkripsi</strong> yang sebelumnya diunduh dari aplikasi ini. Algoritma dikenali otomatis, dan file asli akan diunduh dengan nama serta ekstensi semula.</p>
+    <form method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".enc,.png,.jpg,.jpeg,.webp" required aria-label="Pilih file terenkripsi">
+      <button type="submit">Dekripsi & unduh</button>
+    </form>
+    <p>Gunakan gambar terenkripsi yang masih utuh. Mengedit, menyimpan ulang, atau mengompres gambar dapat menghilangkan data untuk dekripsi.</p>
+    <p>File .bin lama dapat didekripsi melalui daftar file yang masih tersimpan di aplikasi. File .bin yang berdiri sendiri tidak memuat metadata dan IV untuk dekripsi AES/DES.</p>
+  </section>
+
+{% endblock %}
