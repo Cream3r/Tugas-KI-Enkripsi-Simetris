@@ -5,3 +5,73 @@
 /* Developer evaluation */
 select{font:inherit;width:100%;padding:11px;border:1px solid #bfcfc5;border-radius:6px;background:white;color:inherit}.evaluation-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px}.eyebrow{font-size:12px;font-weight:700;letter-spacing:1.6px;color:#52715f}.evaluation-buttons{display:flex;gap:12px;flex-wrap:wrap}.secondary{background:#e6eee9;color:#245a44}.secondary:hover{background:#d7e7dc}.evaluation-error{padding:14px;margin-top:18px;border:1px solid #d9a6a0;background:#fff0ed;color:#812d22;border-radius:6px}.badge{display:inline-block;padding:3px 8px;border-radius:4px;background:#e6f2e9;color:#245637;white-space:nowrap}.badge.bad{background:#ffe7e3;color:#8d251c}.digest{font-size:12px;overflow-wrap:anywhere;display:block;max-width:240px;min-width:130px}caption{text-align:left;color:#64756c;font-size:13px;padding:8px 0}thead th{background:#f5f8f6;vertical-align:bottom}td,th{vertical-align:top}.interpretation li{margin-bottom:14px}.evaluation-heading p{max-width:760px}input:disabled,select:disabled{opacity:.55}#evaluation-progress:empty{display:none}
 @media(max-width:680px){.evaluation-form-grid{grid-template-columns:1fr}.links{font-size:13px}.table-scroll table{min-width:560px}}
+
+/* Danger & Secondary Buttons */
+.btn-danger, button.btn-danger {
+  background: #b91c1c;
+  color: white;
+}
+.btn-danger:hover, button.btn-danger:hover {
+  background: #991b1b;
+}
+.btn-secondary, a.btn-secondary, button.btn-secondary {
+  display: inline-block;
+  background: #e6eee9;
+  color: #245a44;
+  padding: 11px 20px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+  margin-top: 18px;
+}
+.btn-secondary:hover, a.btn-secondary:hover, button.btn-secondary:hover {
+  background: #d7e7dc;
+}
+
+/* Profile Display */
+.profile-card {
+  margin: 20px 0;
+}
+.profile-grid {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px 16px;
+  margin: 16px 0;
+  font-size: 15px;
+}
+.profile-grid dt {
+  font-weight: 600;
+  color: #496355;
+}
+.profile-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+.profile-actions button, .profile-actions .btn-secondary, .profile-actions .btn-danger {
+  margin-top: 0;
+}
+.file-card-actions {
+  margin-top: 18px;
+  border-top: 1px solid #e0e8e3;
+  padding-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+.file-card-actions button {
+  margin-top: 0;
+}
+@media (max-width: 680px) {
+  .profile-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}

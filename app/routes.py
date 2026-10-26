@@ -3,6 +3,7 @@ import io
 import json
 import os
 import secrets
+import shutil
 import time
 
 from flask import (
@@ -105,9 +106,24 @@ def personal_page():
     db = get_db()
     try:
         personal = db.execute("SELECT * FROM personal_data WHERE user_id = ? ORDER BY created_at DESC, id DESC", (current_user_id(),)).fetchall()
+        personal_item = personal[0] if personal else None
+        decrypted_profile = None
+        if personal_item:
+            try:
+                raw_json = decrypt_aes(personal_item["aes_data"], personal_item["aes_iv"])
+                decrypted_profile = json.loads(raw_json.decode("utf-8"))
+            except Exception:
+                decrypted_profile = {}
+        edit_mode = request.args.get("edit") == "1" and personal_item is not None
     finally:
         db.close()
-    return render_template("personal.html", personal=personal)
+    return render_template(
+        "personal.html",
+        personal=personal,
+        personal_item=personal_item,
+        decrypted_profile=decrypted_profile,
+        edit_mode=edit_mode
+    )
 
 @bp.route("/register", methods=["GET", "POST"])
 def register():
@@ -177,34 +193,133 @@ def save_personal():
     if not logged_in():
         return redirect(url_for("main.login"))
 
-    data = {
-        "full_name": request.form.get("full_name", ""),
-        "birth_date": request.form.get("birth_date", ""),
-        "phone": request.form.get("phone", ""),
-        "address": request.form.get("address", ""),
-        "email": request.form.get("email", ""),
-    }
-
-    encrypted = encrypt_all(serialize_personal_data(data))
-
     db = get_db()
-    db.execute(
-        """INSERT INTO personal_data
-        (user_id, aes_data, des_data, rc4_data, aes_iv, des_iv)
-        VALUES (?, ?, ?, ?, ?, ?)""",
-        (
-            current_user_id(),
-            encrypted["aes"],
-            encrypted["des"],
-            encrypted["rc4"],
-            encrypted["aes_iv"],
-            encrypted["des_iv"],
+    try:
+        existing = db.execute(
+            "SELECT id FROM personal_data WHERE user_id = ?",
+            (current_user_id(),)
+        ).fetchone()
+        if existing:
+            flash("Anda sudah memiliki 1 entri data pribadi aktif. Silakan edit atau hapus data tersebut jika ingin mengubah.")
+            return redirect(url_for("main.personal_page"))
+
+        data = {
+            "full_name": request.form.get("full_name", "").strip(),
+            "birth_date": request.form.get("birth_date", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "address": request.form.get("address", "").strip(),
+            "email": request.form.get("email", "").strip(),
+        }
+
+        encrypted = encrypt_all(serialize_personal_data(data))
+
+        db.execute(
+            """INSERT INTO personal_data
+            (user_id, aes_data, des_data, rc4_data, aes_iv, des_iv)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                current_user_id(),
+                encrypted["aes"],
+                encrypted["des"],
+                encrypted["rc4"],
+                encrypted["aes_iv"],
+                encrypted["des_iv"],
+            )
         )
-    )
-    db.commit()
-    db.close()
+        db.commit()
+    finally:
+        db.close()
 
     flash("Data pribadi berhasil disimpan menggunakan AES, DES, dan RC4.")
+    return redirect(url_for("main.personal_page"))
+
+@bp.route("/personal/<int:item_id>/edit", methods=["GET", "POST"])
+@bp.route("/personal/<int:item_id>/update", methods=["POST"])
+def edit_personal(item_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    db = get_db()
+    try:
+        item = db.execute(
+            "SELECT * FROM personal_data WHERE id = ? AND user_id = ?",
+            (item_id, current_user_id())
+        ).fetchone()
+
+        if not item:
+            flash("Data pribadi tidak ditemukan atau bukan milik akun Anda.")
+            return redirect(url_for("main.personal_page"))
+
+        if request.method == "POST":
+            data = {
+                "full_name": request.form.get("full_name", "").strip(),
+                "birth_date": request.form.get("birth_date", "").strip(),
+                "phone": request.form.get("phone", "").strip(),
+                "address": request.form.get("address", "").strip(),
+                "email": request.form.get("email", "").strip(),
+            }
+
+            encrypted = encrypt_all(serialize_personal_data(data))
+
+            db.execute(
+                """UPDATE personal_data
+                SET aes_data = ?, des_data = ?, rc4_data = ?,
+                    aes_iv = ?, des_iv = ?, created_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?""",
+                (
+                    encrypted["aes"],
+                    encrypted["des"],
+                    encrypted["rc4"],
+                    encrypted["aes_iv"],
+                    encrypted["des_iv"],
+                    item_id,
+                    current_user_id(),
+                )
+            )
+            db.commit()
+            flash("Data pribadi berhasil diperbarui dan dienkripsi ulang dengan AES, DES, dan RC4.")
+            return redirect(url_for("main.personal_page"))
+
+        try:
+            raw_json = decrypt_aes(item["aes_data"], item["aes_iv"])
+            decrypted_profile = json.loads(raw_json.decode("utf-8"))
+        except Exception:
+            decrypted_profile = {}
+
+        return render_template(
+            "personal.html",
+            personal=[item],
+            personal_item=item,
+            decrypted_profile=decrypted_profile,
+            edit_mode=True
+        )
+    finally:
+        db.close()
+
+@bp.route("/personal/<int:item_id>/delete", methods=["POST"])
+def delete_personal(item_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    db = get_db()
+    try:
+        item = db.execute(
+            "SELECT * FROM personal_data WHERE id = ? AND user_id = ?",
+            (item_id, current_user_id())
+        ).fetchone()
+
+        if not item:
+            return "Data pribadi tidak ditemukan", 404
+
+        db.execute(
+            "DELETE FROM personal_data WHERE id = ? AND user_id = ?",
+            (item_id, current_user_id())
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    flash("Data pribadi berhasil dihapus secara permanen dari server.")
     return redirect(url_for("main.personal_page"))
 
 @bp.route("/personal/<int:item_id>/<algorithm>")
@@ -348,6 +463,47 @@ def download_file(file_id, algorithm):
 def image_mime(extension):
     return {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}[extension]
 
+
+@bp.route("/file/<int:file_id>/delete", methods=["POST"])
+def delete_file(file_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    item = owned_file(file_id)
+    if not item:
+        return "File tidak ditemukan", 404
+
+    root = encrypted_root()
+    # Delete individual binary files if they exist
+    for key in ("aes_path", "des_path", "rc4_path"):
+        path = item[key]
+        if path and os.path.isabs(path) and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    # Delete directory containing encrypted files and metadata.json
+    if item["aes_path"]:
+        file_dir = os.path.abspath(os.path.dirname(item["aes_path"]))
+        try:
+            if os.path.commonpath([root, file_dir]) == root and file_dir != root and os.path.isdir(file_dir):
+                shutil.rmtree(file_dir, ignore_errors=True)
+        except (ValueError, OSError):
+            pass
+
+    db = get_db()
+    try:
+        db.execute(
+            "DELETE FROM files WHERE id = ? AND user_id = ?",
+            (file_id, current_user_id())
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    flash(f"Berkas '{item['original_name']}' berhasil dihapus secara permanen dari server.")
+    return redirect(url_for("main.files_page"))
 
 @bp.route("/file/<int:file_id>/<algorithm>/encrypted")
 def download_encrypted_file(file_id, algorithm):

@@ -51,6 +51,11 @@
       </div>
     {% endfor %}
     </div></details>
+    <div class="file-card-actions">
+      <form action="{{ url_for('main.delete_file', file_id=file['id']) }}" method="post" onsubmit="return confirm('Apakah Anda yakin ingin menghapus berkas &quot;{{ file['original_name'] }}&quot; secara permanen dari server?');">
+        <button type="submit" class="btn-danger">Hapus Berkas</button>
+      </form>
+    </div>
   </article>
   {% else %}<p>Belum ada file. Unggah file untuk mulai mengenkripsi.</p>{% endfor %}
 

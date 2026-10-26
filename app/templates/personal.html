@@ -1,46 +1,103 @@
 {% extends "base.html" %}
-{% block content %}<h1>Data pribadi pelamar</h1><p class="note">Simpan identitas dan kontak untuk menyiapkan lamaran kerja. Hanya akun Anda yang dapat mengambil kembali data ini.</p><section class="card">
-<h2>Identitas & kontak</h2>
-<form method="post" action="{{ url_for('main.save_personal') }}">
+{% block content %}
+<h1>Data pribadi pelamar</h1>
+<p class="note">Simpan identitas dan kontak untuk menyiapkan lamaran kerja. Hanya akun Anda yang dapat mengambil kembali data ini.</p>
+
+{% if personal_item and edit_mode %}
+<!-- Mode Edit Data Pribadi -->
+<section class="card">
+  <h2>Edit data pribadi pelamar</h2>
+  <p class="note">Perbarui informasi identitas Anda. Seluruh perubahan akan dienkripsi ulang menggunakan AES, DES, dan RC4 serta dibuatkan IV (Initialization Vector) baru.</p>
+  <form method="post" action="{{ url_for('main.edit_personal', item_id=personal_item.id) }}">
     <label for="full_name">Nama lengkap</label>
-<input id="full_name" name="full_name" required>
+    <input id="full_name" name="full_name" value="{{ decrypted_profile.get('full_name', '') }}" required>
 
     <label for="birth_date">Tanggal lahir</label>
-<input id="birth_date" name="birth_date" type="date">
+    <input id="birth_date" name="birth_date" type="date" value="{{ decrypted_profile.get('birth_date', '') }}">
 
     <label for="phone">Telepon</label>
-<input id="phone" name="phone">
+    <input id="phone" name="phone" value="{{ decrypted_profile.get('phone', '') }}">
 
     <label for="email">Email</label>
-<input id="email" name="email" type="email">
+    <input id="email" name="email" type="email" value="{{ decrypted_profile.get('email', '') }}">
 
     <label for="address">Alamat</label>
-<textarea id="address" name="address"></textarea>
+    <textarea id="address" name="address">{{ decrypted_profile.get('address', '') }}</textarea>
 
-    <button>Enkripsi & simpan</button>
-</form>
+    <div class="profile-actions">
+      <button type="submit">Simpan Perubahan & Enkripsi Ulang</button>
+      <a href="{{ url_for('main.personal_page') }}" class="btn-secondary">Batal</a>
+    </div>
+  </form>
 </section>
 
+{% elif personal_item %}
+<!-- Tampilan Kartu Data Pribadi Aktif (Didekripsi) -->
 <section class="card">
-<h2>Data tersimpan</h2>
-{% if personal %}
-<div class="table-scroll"><table>
-<tr><th>ID</th><th>Disimpan</th><th>Unduh JSON asli</th></tr>
-{% for item in personal %}
-<tr>
-<td>{{ item.id }}</td>
-<td>{{ item.created_at }}</td>
-<td>
-<a href="{{ url_for('main.download_personal', item_id=item.id, algorithm='aes') }}">AES</a>
-<a href="{{ url_for('main.download_personal', item_id=item.id, algorithm='des') }}">DES</a>
-<a href="{{ url_for('main.download_personal', item_id=item.id, algorithm='rc4') }}">RC4</a>
-</td>
-</tr>
-{% endfor %}
-</table></div>
-{% else %}
-<p>Belum ada data pribadi.</p>
-{% endif %}
+  <h2>Profil data pribadi aktif</h2>
+  <p class="note">Setiap akun hanya memiliki maksimal 1 profil identitas aktif. Data di bawah ini telah didekripsi langsung dari server untuk kemudahan peninjauan Anda.</p>
+  
+  <div class="profile-details">
+    <dl class="profile-grid">
+      <dt>Nama Lengkap</dt>
+      <dd><strong>{{ decrypted_profile.get('full_name') or '-' }}</strong></dd>
+
+      <dt>Tanggal Lahir</dt>
+      <dd>{{ decrypted_profile.get('birth_date') or '-' }}</dd>
+
+      <dt>Nomor Telepon</dt>
+      <dd>{{ decrypted_profile.get('phone') or '-' }}</dd>
+
+      <dt>Alamat Email</dt>
+      <dd>{{ decrypted_profile.get('email') or '-' }}</dd>
+
+      <dt>Alamat Domisili</dt>
+      <dd>{{ decrypted_profile.get('address') or '-' }}</dd>
+
+      <dt>Waktu Tersimpan</dt>
+      <dd class="note">{{ personal_item.created_at }}</dd>
+    </dl>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <span class="note">Unduh JSON asli terenkripsi:</span>
+    <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='aes') }}">AES</a>
+    <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='des') }}">DES</a>
+    <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='rc4') }}">RC4</a>
+  </div>
+
+  <div class="profile-actions">
+    <a href="{{ url_for('main.personal_page', edit=1) }}" class="btn-secondary">Edit Data</a>
+    <form method="post" action="{{ url_for('main.delete_personal', item_id=personal_item.id) }}" style="display:inline;" onsubmit="return confirm('Apakah Anda yakin ingin menghapus data pribadi ini secara permanen dari server?');">
+      <button type="submit" class="btn-danger">Hapus Data</button>
+    </form>
+  </div>
 </section>
+
+{% else %}
+<!-- Formulir Pengisian Profil Baru (Jika Belum Ada Data Pribadi) -->
+<section class="card">
+  <h2>Identitas & kontak pelamar</h2>
+  <p class="note">Anda belum memiliki data pribadi tersimpan. Lengkapi formulir di bawah ini untuk menyimpan profil identitas Anda yang akan dienkripsi secara simetris.</p>
+  <form method="post" action="{{ url_for('main.save_personal') }}">
+    <label for="full_name">Nama lengkap</label>
+    <input id="full_name" name="full_name" required placeholder="Contoh: Budi Santoso">
+
+    <label for="birth_date">Tanggal lahir</label>
+    <input id="birth_date" name="birth_date" type="date">
+
+    <label for="phone">Telepon</label>
+    <input id="phone" name="phone" placeholder="Contoh: 081234567890">
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" placeholder="Contoh: budi@example.com">
+
+    <label for="address">Alamat</label>
+    <textarea id="address" name="address" placeholder="Alamat domisili lengkap"></textarea>
+
+    <button type="submit">Enkripsi & simpan</button>
+  </form>
+</section>
+{% endif %}
 
 {% endblock %}
