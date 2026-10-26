@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card small">
-<h1>Daftar</h1>
+<h1>Daftar Akun</h1>
 <form method="post">
     <label for="username">Username</label>
     <input id="username" autocomplete="username" name="username" required>
@@ -9,7 +9,13 @@
     <label for="password">Password</label>
     <input id="password" autocomplete="new-password" name="password" type="password" minlength="8" required>
 
-    <button>Daftar</button>
+    <label for="role">Peran Akun</label>
+    <select id="role" name="role">
+      <option value="candidate">Pelamar Kerja (Kandidat)</option>
+      <option value="hrd">Tim HRD / Perekrut (Recruiter)</option>
+    </select>
+
+    <button type="submit">Daftar</button>
 </form>
 <p>Sudah punya akun? <a href="{{ url_for('main.login') }}">Masuk</a></p>
 </div>

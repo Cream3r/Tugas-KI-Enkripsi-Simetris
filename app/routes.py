@@ -1,8 +1,11 @@
+import base64
 import hashlib
+import hmac
 import io
 import json
 import os
 import secrets
+import shutil
 import time
 
 from flask import (
@@ -12,10 +15,12 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from .crypto import (
-    AES_KEY, DES_KEY, RC4_KEY,
+    AES_KEY, DES_KEY, RC4_KEY, DEFAULT_KEYS, DEFAULT_AES_KEY, DEFAULT_DES_KEY, DEFAULT_RC4_KEY,
     benchmark, decode_bytes, decrypt_aes, decrypt_des, decrypt_rc4,
-    encrypt_all, serialize_personal_data, ALGORITHMS, IMAGE_FORMATS,
-    pack_encrypted_file, encrypted_image, decrypt_export, unpack_encrypted_file
+    encrypt_all, generate_keys, derive_keys_from_passphrase, derive_mac_key,
+    serialize_personal_data, ALGORITHMS, IMAGE_FORMATS,
+    PACKAGE_MAGIC, pack_encrypted_file, encrypted_image, decrypt_export,
+    unpack_encrypted_file, extract_package_bytes
 )
 from .db import get_db
 
@@ -27,6 +32,16 @@ ALLOWED_EXTENSIONS = {
     "mp4", "avi", "mov", "mkv", "webm"
 }
 
+
+@bp.app_template_filter("hex")
+def hex_filter(value):
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def hash_password(password, salt):
     return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), salt, 200_000
@@ -37,6 +52,12 @@ def logged_in():
 
 def current_user_id():
     return session.get("user_id")
+
+def current_user_role():
+    return session.get("role", "candidate")
+
+def is_hrd():
+    return logged_in() and current_user_role() == "hrd"
 
 def encrypted_root():
     path = current_app.config.get("ENCRYPTED_STORAGE") or os.path.join(
@@ -60,17 +81,30 @@ def owned_file(file_id):
 def decrypt_stored_file(item, algorithm):
     with open(item[f"{algorithm}_path"], "rb") as f:
         ciphertext = f.read()
+    key = item[f"{algorithm}_key"] or DEFAULT_KEYS.get(algorithm)
     if algorithm == "aes":
-        return decrypt_aes(ciphertext, item["aes_iv"])
+        return decrypt_aes(ciphertext, item["aes_iv"], key=key)
     if algorithm == "des":
-        return decrypt_des(ciphertext, item["des_iv"])
-    return decrypt_rc4(ciphertext)
+        return decrypt_des(ciphertext, item["des_iv"], key=key)
+    return decrypt_rc4(ciphertext, key=key)
+
+
+@bp.app_context_processor
+def app_context_data():
+    return {
+        "developer_enabled": is_developer(),
+        "is_hrd": is_hrd(),
+        "user_role": current_user_role(),
+    }
 
 
 @bp.route("/files")
 def files_page():
     if not logged_in():
         return redirect(url_for("main.login"))
+    if is_hrd():
+        return redirect(url_for("main.hrd_dashboard"))
+
     db = get_db()
     try:
         files = db.execute(
@@ -79,12 +113,7 @@ def files_page():
         ).fetchall()
     finally:
         db.close()
-    keys = [
-        {"id": "aes", "name": "AES-256-CBC", "hex": AES_KEY.hex(), "size": "32 byte / 256 bit"},
-        {"id": "des", "name": "DES-CBC", "hex": DES_KEY.hex(), "size": "8 byte / 64 bit (56 bit efektif)"},
-        {"id": "rc4", "name": "RC4", "hex": RC4_KEY.hex(), "size": "32 byte / 256 bit"},
-    ]
-    response = current_app.make_response(render_template("files.html", files=files, encryption_keys=keys))
+    response = current_app.make_response(render_template("files.html", files=files))
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -92,28 +121,54 @@ def files_page():
 def index():
     if not logged_in():
         return redirect(url_for("main.login"))
+    if is_hrd():
+        return redirect(url_for("main.hrd_dashboard"))
     return redirect(url_for("main.files_page"))
 
 @bp.route("/dashboard")
 def dashboard():
-    return redirect(url_for("main.index"))
+    if is_hrd():
+        return redirect(url_for("main.hrd_dashboard"))
+    return redirect(url_for("main.files_page"))
 
 @bp.route("/personal", methods=["GET"])
 def personal_page():
     if not logged_in():
         return redirect(url_for("main.login"))
+    if is_hrd():
+        return redirect(url_for("main.hrd_dashboard"))
+
     db = get_db()
     try:
         personal = db.execute("SELECT * FROM personal_data WHERE user_id = ? ORDER BY created_at DESC, id DESC", (current_user_id(),)).fetchall()
+        personal_item = personal[0] if personal else None
+        decrypted_profile = None
+        if personal_item:
+            try:
+                key = personal_item["aes_key"] or DEFAULT_AES_KEY
+                raw_json = decrypt_aes(personal_item["aes_data"], personal_item["aes_iv"], key=key)
+                decrypted_profile = json.loads(raw_json.decode("utf-8"))
+            except Exception:
+                decrypted_profile = {}
+        edit_mode = request.args.get("edit") == "1" and personal_item is not None
     finally:
         db.close()
-    return render_template("personal.html", personal=personal)
+    return render_template(
+        "personal.html",
+        personal=personal,
+        personal_item=personal_item,
+        decrypted_profile=decrypted_profile,
+        edit_mode=edit_mode
+    )
 
 @bp.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        role = request.form.get("role", "candidate").strip().lower()
+        if role not in {"candidate", "hrd"}:
+            role = "candidate"
 
         if not username or len(password) < 8:
             flash("Username wajib diisi dan password minimal 8 karakter.")
@@ -125,8 +180,8 @@ def register():
         db = get_db()
         try:
             db.execute(
-                "INSERT INTO users (username, password_hash, password_salt) VALUES (?, ?, ?)",
-                (username, password_hash.hex(), salt.hex())
+                "INSERT INTO users (username, password_hash, password_salt, role) VALUES (?, ?, ?, ?)",
+                (username, password_hash.hex(), salt.hex(), role)
             )
             db.commit()
         except Exception:
@@ -135,7 +190,7 @@ def register():
             return redirect(url_for("main.register"))
 
         db.close()
-        flash("Registrasi berhasil. Silakan login.")
+        flash(f"Registrasi berhasil sebagai {('Tim HRD' if role == 'hrd' else 'Pelamar')}. Silakan login.")
         return redirect(url_for("main.login"))
 
     return render_template("register.html")
@@ -161,6 +216,11 @@ def login():
                 session.clear()
                 session["user_id"] = user["id"]
                 session["username"] = user["username"]
+                user_role = user["role"] if ("role" in user.keys() and user["role"]) else "candidate"
+                session["role"] = user_role
+
+                if user_role == "hrd":
+                    return redirect(url_for("main.hrd_dashboard"))
                 return redirect(url_for("main.index"))
 
         flash("Username atau password salah.")
@@ -172,42 +232,326 @@ def logout():
     session.clear()
     return redirect(url_for("main.login"))
 
+
+@bp.route("/account", methods=["GET"])
+def account_page():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    db = get_db()
+    try:
+        user = db.execute("SELECT id, username, role FROM users WHERE id = ?", (current_user_id(),)).fetchone()
+        if not user:
+            session.clear()
+            return redirect(url_for("main.login"))
+
+        files_count = db.execute(
+            "SELECT COUNT(*) FROM files WHERE user_id = ?", (current_user_id(),)
+        ).fetchone()[0]
+
+        has_personal = db.execute(
+            "SELECT id FROM personal_data WHERE user_id = ?", (current_user_id(),)
+        ).fetchone() is not None
+    finally:
+        db.close()
+
+    return render_template(
+        "account.html",
+        user=user,
+        files_count=files_count,
+        has_personal=has_personal
+    )
+
+
+@bp.route("/account/update", methods=["POST"])
+def account_update():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    new_username = request.form.get("username", "").strip()
+    current_password = request.form.get("current_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+
+    if not new_username:
+        flash("Username tidak boleh kosong.")
+        return redirect(url_for("main.account_page"))
+
+    if not current_password:
+        flash("Password saat ini wajib diisi untuk mengonfirmasi perubahan.")
+        return redirect(url_for("main.account_page"))
+
+    db = get_db()
+    try:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (current_user_id(),)).fetchone()
+        if not user:
+            session.clear()
+            return redirect(url_for("main.login"))
+
+        # Verify current password
+        salt = bytes.fromhex(user["password_salt"])
+        expected = bytes.fromhex(user["password_hash"])
+        if not secrets.compare_digest(hash_password(current_password, salt), expected):
+            flash("Password saat ini salah. Perubahan kredensial dibatalkan.")
+            return redirect(url_for("main.account_page"))
+
+        # Check if username is being changed and is already taken
+        if new_username != user["username"]:
+            taken = db.execute(
+                "SELECT id FROM users WHERE username = ? AND id != ?",
+                (new_username, current_user_id())
+            ).fetchone()
+            if taken:
+                flash("Username tersebut sudah digunakan oleh akun lain. Silakan pilih username lain.")
+                return redirect(url_for("main.account_page"))
+
+        # Check if password is being changed
+        if new_password or confirm_password:
+            if len(new_password) < 8:
+                flash("Password baru minimal 8 karakter.")
+                return redirect(url_for("main.account_page"))
+            if new_password != confirm_password:
+                flash("Konfirmasi password baru tidak cocok.")
+                return redirect(url_for("main.account_page"))
+
+            new_salt = secrets.token_bytes(16)
+            new_hash = hash_password(new_password, new_salt)
+            db.execute(
+                "UPDATE users SET username = ?, password_hash = ?, password_salt = ? WHERE id = ?",
+                (new_username, new_hash.hex(), new_salt.hex(), current_user_id())
+            )
+        else:
+            db.execute(
+                "UPDATE users SET username = ? WHERE id = ?",
+                (new_username, current_user_id())
+            )
+
+        db.commit()
+        session["username"] = new_username
+        flash("Informasi akun Anda berhasil diperbarui.")
+    finally:
+        db.close()
+
+    return redirect(url_for("main.account_page"))
+
+
+@bp.route("/account/delete", methods=["POST"])
+def account_delete():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    confirm_password = request.form.get("confirm_delete_password", "")
+    if not confirm_password:
+        flash("Password wajib diisi untuk mengonfirmasi penghapusan akun.")
+        return redirect(url_for("main.account_page"))
+
+    uid = current_user_id()
+    db = get_db()
+    try:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+        if not user:
+            session.clear()
+            return redirect(url_for("main.login"))
+
+        # Verify password
+        salt = bytes.fromhex(user["password_salt"])
+        expected = bytes.fromhex(user["password_hash"])
+        if not secrets.compare_digest(hash_password(confirm_password, salt), expected):
+            flash("Password verifikasi salah. Akun tidak dihapus.")
+            return redirect(url_for("main.account_page"))
+
+        # 1. Delete physical encrypted files from disk
+        files = db.execute("SELECT * FROM files WHERE user_id = ?", (uid,)).fetchall()
+        root = encrypted_root()
+        for item in files:
+            for k in ("aes_path", "des_path", "rc4_path"):
+                p = item[k]
+                if p and os.path.isabs(p) and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            if item["aes_path"]:
+                file_dir = os.path.abspath(os.path.dirname(item["aes_path"]))
+                try:
+                    if os.path.commonpath([root, file_dir]) == root and file_dir != root and os.path.isdir(file_dir):
+                        shutil.rmtree(file_dir, ignore_errors=True)
+                except (ValueError, OSError):
+                    pass
+
+        # 2. Delete database records
+        db.execute("DELETE FROM files WHERE user_id = ?", (uid,))
+        db.execute("DELETE FROM personal_data WHERE user_id = ?", (uid,))
+        db.execute("DELETE FROM users WHERE id = ?", (uid,))
+        db.commit()
+
+        session.clear()
+        flash("Akun Anda beserta seluruh berkas dan data pribadi telah berhasil dihapus secara permanen.")
+        return redirect(url_for("main.login"))
+    finally:
+        db.close()
+
 @bp.route("/personal", methods=["POST"])
 def save_personal():
     if not logged_in():
         return redirect(url_for("main.login"))
-
-    data = {
-        "full_name": request.form.get("full_name", ""),
-        "birth_date": request.form.get("birth_date", ""),
-        "phone": request.form.get("phone", ""),
-        "address": request.form.get("address", ""),
-        "email": request.form.get("email", ""),
-    }
-
-    encrypted = encrypt_all(serialize_personal_data(data))
+    if is_hrd():
+        flash("Akun HRD tidak menggunakan formulir pelamar.")
+        return redirect(url_for("main.hrd_dashboard"))
 
     db = get_db()
-    db.execute(
-        """INSERT INTO personal_data
-        (user_id, aes_data, des_data, rc4_data, aes_iv, des_iv)
-        VALUES (?, ?, ?, ?, ?, ?)""",
-        (
-            current_user_id(),
-            encrypted["aes"],
-            encrypted["des"],
-            encrypted["rc4"],
-            encrypted["aes_iv"],
-            encrypted["des_iv"],
-        )
-    )
-    db.commit()
-    db.close()
+    try:
+        existing = db.execute(
+            "SELECT id FROM personal_data WHERE user_id = ?",
+            (current_user_id(),)
+        ).fetchone()
+        if existing:
+            flash("Anda sudah memiliki 1 entri data pribadi aktif. Silakan edit atau hapus data tersebut jika ingin mengubah.")
+            return redirect(url_for("main.personal_page"))
 
-    flash("Data pribadi berhasil disimpan menggunakan AES, DES, dan RC4.")
+        data = {
+            "full_name": request.form.get("full_name", "").strip(),
+            "birth_date": request.form.get("birth_date", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "address": request.form.get("address", "").strip(),
+            "email": request.form.get("email", "").strip(),
+        }
+
+        passphrase = request.form.get("passphrase", "").strip()
+        if passphrase:
+            keys = derive_keys_from_passphrase(passphrase)
+        else:
+            keys = generate_keys()
+
+        encrypted = encrypt_all(serialize_personal_data(data), keys=keys)
+
+        db.execute(
+            """INSERT INTO personal_data
+            (user_id, aes_data, des_data, rc4_data, aes_iv, des_iv, aes_key, des_key, rc4_key, passphrase_salt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                current_user_id(),
+                encrypted["aes"],
+                encrypted["des"],
+                encrypted["rc4"],
+                encrypted["aes_iv"],
+                encrypted["des_iv"],
+                encrypted["aes_key"],
+                encrypted["des_key"],
+                encrypted["rc4_key"],
+                keys.get("salt"),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    flash("Data pribadi berhasil disimpan dan diamankan.")
+    return redirect(url_for("main.personal_page"))
+
+@bp.route("/personal/<int:item_id>/edit", methods=["GET", "POST"])
+@bp.route("/personal/<int:item_id>/update", methods=["POST"])
+def edit_personal(item_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    db = get_db()
+    try:
+        item = db.execute(
+            "SELECT * FROM personal_data WHERE id = ? AND user_id = ?",
+            (item_id, current_user_id())
+        ).fetchone()
+
+        if not item:
+            flash("Data pribadi tidak ditemukan atau bukan milik akun Anda.")
+            return redirect(url_for("main.personal_page"))
+
+        if request.method == "POST":
+            data = {
+                "full_name": request.form.get("full_name", "").strip(),
+                "birth_date": request.form.get("birth_date", "").strip(),
+                "phone": request.form.get("phone", "").strip(),
+                "address": request.form.get("address", "").strip(),
+                "email": request.form.get("email", "").strip(),
+            }
+
+            passphrase = request.form.get("passphrase", "").strip()
+            if passphrase:
+                keys = derive_keys_from_passphrase(passphrase)
+            else:
+                keys = generate_keys()
+
+            encrypted = encrypt_all(serialize_personal_data(data), keys=keys)
+
+            db.execute(
+                """UPDATE personal_data
+                SET aes_data = ?, des_data = ?, rc4_data = ?,
+                    aes_iv = ?, des_iv = ?, aes_key = ?, des_key = ?, rc4_key = ?, passphrase_salt = ?,
+                    created_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?""",
+                (
+                    encrypted["aes"],
+                    encrypted["des"],
+                    encrypted["rc4"],
+                    encrypted["aes_iv"],
+                    encrypted["des_iv"],
+                    encrypted["aes_key"],
+                    encrypted["des_key"],
+                    encrypted["rc4_key"],
+                    keys.get("salt"),
+                    item_id,
+                    current_user_id(),
+                )
+            )
+            db.commit()
+            flash("Data pribadi berhasil diperbarui dan dienkripsi ulang.")
+            return redirect(url_for("main.personal_page"))
+
+        try:
+            key = item["aes_key"] or DEFAULT_AES_KEY
+            raw_json = decrypt_aes(item["aes_data"], item["aes_iv"], key=key)
+            decrypted_profile = json.loads(raw_json.decode("utf-8"))
+        except Exception:
+            decrypted_profile = {}
+
+        return render_template(
+            "personal.html",
+            personal=[item],
+            personal_item=item,
+            decrypted_profile=decrypted_profile,
+            edit_mode=True
+        )
+    finally:
+        db.close()
+
+@bp.route("/personal/<int:item_id>/delete", methods=["POST"])
+def delete_personal(item_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    db = get_db()
+    try:
+        item = db.execute(
+            "SELECT * FROM personal_data WHERE id = ? AND user_id = ?",
+            (item_id, current_user_id())
+        ).fetchone()
+
+        if not item:
+            return "Data pribadi tidak ditemukan", 404
+
+        db.execute(
+            "DELETE FROM personal_data WHERE id = ? AND user_id = ?",
+            (item_id, current_user_id())
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    flash("Data pribadi berhasil dihapus secara permanen dari server.")
     return redirect(url_for("main.personal_page"))
 
 @bp.route("/personal/<int:item_id>/<algorithm>")
+@bp.route("/personal/<int:item_id>/<algorithm>/encrypted")
 def download_personal(item_id, algorithm):
     if not logged_in():
         return redirect(url_for("main.login"))
@@ -225,12 +569,34 @@ def download_personal(item_id, algorithm):
     if not item:
         return "Data tidak ditemukan", 404
 
+    is_enc = request.args.get("format") == "enc" or request.path.endswith("/encrypted")
+    key = item[f"{algorithm}_key"] or DEFAULT_KEYS.get(algorithm)
+
+    if is_enc:
+        ciphertext = item[f"{algorithm}_data"]
+        iv = item[f"{algorithm}_iv"] if algorithm in {"aes", "des"} else b""
+        salt = item["passphrase_salt"]
+        package = pack_encrypted_file(
+            ciphertext, algorithm,
+            f"personal_data_{item_id}.json",
+            "application/json",
+            iv=iv, key=key, salt=salt
+        )
+        response = send_file(
+            io.BytesIO(package), as_attachment=True,
+            download_name=f"personal_data_{item_id}_{algorithm}.enc",
+            mimetype="application/octet-stream"
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     if algorithm == "aes":
-        plaintext = decrypt_aes(item["aes_data"], item["aes_iv"])
+        plaintext = decrypt_aes(item["aes_data"], item["aes_iv"], key=key)
     elif algorithm == "des":
-        plaintext = decrypt_des(item["des_data"], item["des_iv"])
+        plaintext = decrypt_des(item["des_data"], item["des_iv"], key=key)
     else:
-        plaintext = decrypt_rc4(item["rc4_data"])
+        plaintext = decrypt_rc4(item["rc4_data"], key=key)
 
     response = send_file(io.BytesIO(plaintext), as_attachment=True,
                          download_name=f"personal_data_{item_id}_{algorithm}.json",
@@ -243,6 +609,9 @@ def download_personal(item_id, algorithm):
 def upload():
     if not logged_in():
         return redirect(url_for("main.login"))
+    if is_hrd():
+        flash("Akun HRD tidak menggunakan formulir upload pelamar.")
+        return redirect(url_for("main.hrd_dashboard"))
 
     uploaded = request.files.get("file")
 
@@ -262,7 +631,13 @@ def upload():
         flash("File kosong.")
         return redirect(url_for("main.index"))
 
-    encrypted = encrypt_all(data)
+    passphrase = request.form.get("passphrase", "").strip()
+    if passphrase:
+        keys = derive_keys_from_passphrase(passphrase)
+    else:
+        keys = generate_keys()
+
+    encrypted = encrypt_all(data, keys=keys)
 
     file_id = secrets.token_hex(16)
     directory = os.path.join(encrypted_root(), file_id)
@@ -285,6 +660,9 @@ def upload():
         "original_size": len(data),
         "aes_iv": encrypted["aes_iv"].hex(),
         "des_iv": encrypted["des_iv"].hex(),
+        "aes_key": encrypted["aes_key"].hex(),
+        "des_key": encrypted["des_key"].hex(),
+        "rc4_key": encrypted["rc4_key"].hex(),
     }
 
     with open(os.path.join(directory, "metadata.json"), "w", encoding="utf-8") as f:
@@ -294,8 +672,8 @@ def upload():
     db.execute(
         """INSERT INTO files
         (user_id, original_name, mime_type, aes_path, des_path, rc4_path,
-         aes_iv, des_iv, original_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         aes_iv, des_iv, aes_key, des_key, rc4_key, passphrase_salt, original_size)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             current_user_id(),
             filename,
@@ -305,13 +683,17 @@ def upload():
             rc4_path,
             encrypted["aes_iv"],
             encrypted["des_iv"],
+            encrypted["aes_key"],
+            encrypted["des_key"],
+            encrypted["rc4_key"],
+            keys.get("salt"),
             len(data),
         )
     )
     db.commit()
     db.close()
 
-    flash("File berhasil dienkripsi dengan AES, DES, dan RC4.")
+    flash("File berhasil dienkripsi dan disimpan.")
     return redirect(url_for("main.files_page"))
 
 @bp.route("/file/<int:file_id>/<algorithm>")
@@ -349,6 +731,47 @@ def image_mime(extension):
     return {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}[extension]
 
 
+@bp.route("/file/<int:file_id>/delete", methods=["POST"])
+def delete_file(file_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    item = owned_file(file_id)
+    if not item:
+        return "File tidak ditemukan", 404
+
+    root = encrypted_root()
+    # Delete individual binary files if they exist
+    for key in ("aes_path", "des_path", "rc4_path"):
+        path = item[key]
+        if path and os.path.isabs(path) and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    # Delete directory containing encrypted files and metadata.json
+    if item["aes_path"]:
+        file_dir = os.path.abspath(os.path.dirname(item["aes_path"]))
+        try:
+            if os.path.commonpath([root, file_dir]) == root and file_dir != root and os.path.isdir(file_dir):
+                shutil.rmtree(file_dir, ignore_errors=True)
+        except (ValueError, OSError):
+            pass
+
+    db = get_db()
+    try:
+        db.execute(
+            "DELETE FROM files WHERE id = ? AND user_id = ?",
+            (file_id, current_user_id())
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    flash(f"Berkas '{item['original_name']}' berhasil dihapus secara permanen dari server.")
+    return redirect(url_for("main.files_page"))
+
 @bp.route("/file/<int:file_id>/<algorithm>/encrypted")
 def download_encrypted_file(file_id, algorithm):
     if not logged_in():
@@ -367,7 +790,9 @@ def download_encrypted_file(file_id, algorithm):
         name = secure_filename(item["original_name"]) or "file"
         extension = name.rsplit(".", 1)[-1].lower()
         iv = item[f"{algorithm}_iv"] if algorithm in {"aes", "des"} else b""
-        package = pack_encrypted_file(ciphertext, algorithm, name, item["mime_type"], iv)
+        key = item[f"{algorithm}_key"] or DEFAULT_KEYS.get(algorithm)
+        salt = item["passphrase_salt"]
+        package = pack_encrypted_file(ciphertext, algorithm, name, item["mime_type"], iv, key=key, salt=salt)
         is_image = output_format == "image" and extension in IMAGE_FORMATS
         if is_image:
             original = decrypt_stored_file(item, algorithm)
@@ -393,47 +818,290 @@ def download_encrypted_file(file_id, algorithm):
 def decrypt_page():
     if not logged_in():
         return redirect(url_for("main.login"))
+
+    decrypted_profile = None
+    plaintext_json = None
+    original_name = None
+    algorithm = None
+
     if request.method == "POST":
         uploaded = request.files.get("file")
         if not uploaded or not uploaded.filename:
             flash("Pilih file terenkripsi terlebih dahulu.")
             return redirect(url_for("main.decrypt_page"))
+
+        input_cred = request.form.get("key", "").strip()
+
         try:
             exported = uploaded.read()
-            package = unpack_encrypted_file(exported)
-            algorithm = package["algorithm"]
-            db = get_db()
-            try:
-                candidates = db.execute("SELECT * FROM files WHERE user_id = ?", (current_user_id(),)).fetchall()
-            finally:
-                db.close()
-            owned = False
-            for item in candidates:
-                iv = item[f"{algorithm}_iv"] if algorithm in {"aes", "des"} else b""
-                if iv != package["iv"]:
-                    continue
+            if not exported:
+                raise ValueError("File terenkripsi kosong.")
+
+            raw_pkg = extract_package_bytes(exported)
+            start = len(PACKAGE_MAGIC)
+            signature, payload = raw_pkg[start:start+32], raw_pkg[start+32:]
+            meta = json.loads(payload)
+            alg = meta.get("algorithm")
+            if alg not in ALGORITHMS:
+                raise ValueError("Algoritma dalam berkas tidak didukung.")
+
+            key_bytes = None
+            req_len = {"aes": 32, "des": 8, "rc4": 32}
+
+            # 1. Try resolving key from input_cred (either Passphrase or Hex Key)
+            if input_cred:
+                salt = base64.b64decode(meta["salt"]) if meta.get("salt") else None
+
+                # A. Try deriving key via Passphrase with salt
+                if salt:
+                    derived = derive_keys_from_passphrase(input_cred, salt=salt)
+                    cand_key = derived[alg]
+                    cand_mac = derive_mac_key(cand_key)
+                    if hmac.compare_digest(signature, hmac.new(cand_mac, payload, hashlib.sha256).digest()):
+                        key_bytes = cand_key
+
+                # B. Try resolving as raw HEX key
+                if not key_bytes:
+                    try:
+                        parsed_hex = bytes.fromhex(input_cred)
+                        if len(parsed_hex) == req_len[alg]:
+                            cand_mac = derive_mac_key(parsed_hex)
+                            if hmac.compare_digest(signature, hmac.new(cand_mac, payload, hashlib.sha256).digest()):
+                                key_bytes = parsed_hex
+                    except ValueError:
+                        pass
+
+                # C. If neither matched, reject with error
+                if not key_bytes:
+                    flash("Kata sandi / kunci dekripsi salah atau berkas rusak.")
+                    return redirect(url_for("main.decrypt_page"))
+
+            else:
+                # Key not provided in form: fallback lookup for owned items or HRD
+                db = get_db()
                 try:
-                    with open(item[f"{algorithm}_path"], "rb") as source:
-                        if secrets.compare_digest(source.read(), package["ciphertext"]):
-                            owned = True
+                    if is_hrd():
+                        candidates = db.execute("SELECT * FROM files").fetchall()
+                        personal_candidates = db.execute("SELECT * FROM personal_data").fetchall()
+                    else:
+                        candidates = db.execute("SELECT * FROM files WHERE user_id = ?", (current_user_id(),)).fetchall()
+                        personal_candidates = db.execute("SELECT * FROM personal_data WHERE user_id = ?", (current_user_id(),)).fetchall()
+                finally:
+                    db.close()
+
+                target_iv = base64.b64decode(meta["iv"]) if meta.get("iv") else b""
+                target_cipher = base64.b64decode(meta["ciphertext"])
+
+                found_key = None
+                for c in candidates:
+                    iv = c[f"{alg}_iv"] if alg in {"aes", "des"} else b""
+                    if iv == target_iv:
+                        try:
+                            with open(c[f"{alg}_path"], "rb") as source:
+                                if secrets.compare_digest(source.read(), target_cipher):
+                                    found_key = c[f"{alg}_key"] or DEFAULT_KEYS.get(alg)
+                                    break
+                        except OSError:
+                            pass
+
+                if not found_key:
+                    for p in personal_candidates:
+                        iv = p[f"{alg}_iv"] if alg in {"aes", "des"} else b""
+                        if iv == target_iv and secrets.compare_digest(p[f"{alg}_data"], target_cipher):
+                            found_key = p[f"{alg}_key"] or DEFAULT_KEYS.get(alg)
                             break
-                except OSError:
-                    continue
-            if not owned:
-                return "Berkas ini bukan milik akun Anda atau tidak lagi tersimpan.", 403
-            plaintext, original_name, mimetype = decrypt_export(exported)
+
+                if not found_key:
+                    return "Berkas ini bukan milik akun Anda atau tidak lagi tersimpan. Harap masukkan kata sandi / kunci dekripsi.", 403
+
+                key_bytes = found_key
+
+            plaintext, orig_name, mime = decrypt_export(exported, key=key_bytes)
+
+            # Check if this is personal data
+            is_personal = False
+            parsed_profile = None
+            if orig_name.startswith("personal_data") or mime == "application/json":
+                try:
+                    parsed = json.loads(plaintext.decode("utf-8"))
+                    if isinstance(parsed, dict) and any(k in parsed for k in ("full_name", "birth_date", "email", "phone", "address")):
+                        is_personal = True
+                        parsed_profile = parsed
+                except Exception:
+                    is_personal = False
+
+            if is_personal:
+                return render_template(
+                    "decrypt.html",
+                    decrypted_profile=parsed_profile,
+                    plaintext_json=plaintext.decode("utf-8"),
+                    original_name=orig_name,
+                    algorithm=alg.upper()
+                )
+
+            response = send_file(
+                io.BytesIO(plaintext), as_attachment=True,
+                download_name=secure_filename(orig_name) or "decrypted_file",
+                mimetype=mime
+            )
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+
         except ValueError as exc:
-            flash(str(exc))
+            msg = str(exc)
+            if "Kunci dekripsi salah" in msg or "rusak" in msg or "berbeda" in msg:
+                flash("Kata sandi / kunci dekripsi salah atau berkas rusak.")
+            else:
+                flash(msg)
             return redirect(url_for("main.decrypt_page"))
-        response = send_file(
-            io.BytesIO(plaintext), as_attachment=True,
-            download_name=secure_filename(original_name) or "decrypted_file",
-            mimetype=mimetype
-        )
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+
     return render_template("decrypt.html")
+
+
+# ==========================================
+# HRD RECRUITMENT PORTAL ROUTES (SCENARIO 2)
+# ==========================================
+
+@bp.route("/hrd/dashboard")
+def hrd_dashboard():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+    if not is_hrd():
+        flash("Akses ditolak. Halaman ini khusus untuk tim HRD / Recruiter.")
+        return redirect(url_for("main.index"))
+
+    db = get_db()
+    try:
+        # Fetch all candidate users
+        candidates_rows = db.execute(
+            "SELECT id, username FROM users WHERE role = 'candidate' ORDER BY id ASC"
+        ).fetchall()
+
+        applicants_list = []
+        for cand in candidates_rows:
+            cid = cand["id"]
+            # Personal data
+            p = db.execute(
+                "SELECT * FROM personal_data WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (cid,)
+            ).fetchone()
+
+            profile_data = {}
+            if p:
+                try:
+                    key = p["aes_key"] or DEFAULT_AES_KEY
+                    raw_json = decrypt_aes(p["aes_data"], p["aes_iv"], key=key)
+                    profile_data = json.loads(raw_json.decode("utf-8"))
+                except Exception:
+                    profile_data = {}
+
+            # Files count
+            files_count = db.execute(
+                "SELECT COUNT(*) FROM files WHERE user_id = ?",
+                (cid,)
+            ).fetchone()[0]
+
+            applicants_list.append({
+                "id": cid,
+                "username": cand["username"],
+                "has_profile": p is not None,
+                "profile": profile_data,
+                "files_count": files_count,
+                "submitted_at": p["created_at"] if p else "-",
+            })
+
+    finally:
+        db.close()
+
+    return render_template("hrd_dashboard.html", applicants=applicants_list)
+
+
+@bp.route("/hrd/applicant/<int:applicant_id>")
+def hrd_applicant_detail(applicant_id):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+    if not is_hrd():
+        flash("Akses ditolak. Khusus tim HRD.")
+        return redirect(url_for("main.index"))
+
+    db = get_db()
+    try:
+        user = db.execute("SELECT id, username, role FROM users WHERE id = ?", (applicant_id,)).fetchone()
+        if not user:
+            flash("Pelamar tidak ditemukan.")
+            return redirect(url_for("main.hrd_dashboard"))
+
+        p = db.execute(
+            "SELECT * FROM personal_data WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (applicant_id,)
+        ).fetchone()
+
+        profile_data = {}
+        if p:
+            try:
+                key = p["aes_key"] or DEFAULT_AES_KEY
+                raw_json = decrypt_aes(p["aes_data"], p["aes_iv"], key=key)
+                profile_data = json.loads(raw_json.decode("utf-8"))
+            except Exception:
+                profile_data = {}
+
+        files = db.execute(
+            "SELECT * FROM files WHERE user_id = ? ORDER BY created_at DESC",
+            (applicant_id,)
+        ).fetchall()
+
+    finally:
+        db.close()
+
+    return render_template(
+        "hrd_applicant_detail.html",
+        applicant=user,
+        personal_item=p,
+        profile=profile_data,
+        files=files
+    )
+
+
+@bp.route("/hrd/applicant/<int:applicant_id>/file/<int:file_id>/<algorithm>")
+def hrd_download_applicant_file(applicant_id, file_id, algorithm):
+    if not logged_in():
+        return redirect(url_for("main.login"))
+    if not is_hrd():
+        return "Akses ditolak", 403
+
+    if algorithm not in {"aes", "des", "rc4"}:
+        return "Algorithm tidak valid", 400
+
+    db = get_db()
+    try:
+        item = db.execute(
+            "SELECT * FROM files WHERE id = ? AND user_id = ?",
+            (file_id, applicant_id)
+        ).fetchone()
+    finally:
+        db.close()
+
+    if not item:
+        return "File tidak ditemukan", 404
+
+    try:
+        plaintext = decrypt_stored_file(item, algorithm)
+    except (OSError, ValueError):
+        return "Gagal mendekripsi berkas.", 400
+
+    filename = secure_filename(item["original_name"]) or "applicant_file"
+    extension = filename.rsplit(".", 1)[-1].lower()
+    inline = request.args.get("inline") == "1" and extension in IMAGE_FORMATS
+
+    response = send_file(
+        io.BytesIO(plaintext), as_attachment=not inline,
+        download_name=f"HRD_VIEW_{filename}",
+        mimetype=image_mime(extension) if inline else (item["mime_type"] or "application/octet-stream")
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 @bp.route("/benchmark", methods=["GET", "POST"])
 def benchmark_page():
@@ -471,11 +1139,6 @@ def is_developer():
     return logged_in() and session.get("username") in allowed
 
 
-@bp.app_context_processor
-def developer_navigation():
-    return {"developer_enabled": is_developer()}
-
-
 @bp.route("/developer/evaluation", methods=["GET", "POST"])
 def developer_evaluation():
     from datetime import datetime, timezone, timedelta
@@ -485,7 +1148,6 @@ def developer_evaluation():
         return redirect(url_for("main.login"))
     if not is_developer():
         return render_template("developer_denied.html"), 403
-    # Request-specific limit; normal candidate uploads keep their existing limit.
     request.max_content_length = MAX_INPUT + 1024 * 1024
     token = session.setdefault("evaluation_csrf", secrets.token_urlsafe(32))
     report, error = None, None

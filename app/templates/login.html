@@ -9,8 +9,11 @@
     <label for="password">Password</label>
     <input id="password" autocomplete="current-password" name="password" type="password" required>
 
-    <button>Masuk</button>
+    <button type="submit">Masuk</button>
 </form>
 <p>Belum punya akun? <a href="{{ url_for('main.register') }}">Daftar</a></p>
+<p class="note" style="font-size: 12px; margin-top: 14px; border-top: 1px solid #e0e8e3; padding-top: 10px;">
+  Demo HRD: <code>hrd_recruiter</code> / <code>hrd12345</code>
+</p>
 </div>
 {% endblock %}

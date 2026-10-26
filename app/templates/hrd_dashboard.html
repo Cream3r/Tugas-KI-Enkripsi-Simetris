@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
+  <div>
+    <h1>Portal Rekrutmen HRD</h1>
+    <p class="note">Pusat peninjauan dokumen dan identitas pelamar kerja. Dokumen disimpan terenkripsi di server dan didekripsi otomatis sesuai hak akses staf HRD berwenang.</p>
+  </div>
+  <div>
+    <span class="badge" style="background: #23664d; color: white; padding: 6px 12px; font-size: 14px; border-radius: 6px;">Hak Akses: Tim HRD (Recruiter)</span>
+  </div>
+</div>
+
+<section class="panel" style="margin-bottom: 24px;">
+  <h2>Daftar Kandidat Pelamar</h2>
+  <p class="note">Berikut adalah seluruh kandidat yang terdaftar dalam sistem:</p>
+
+  {% if applicants %}
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Akun Pelamar</th>
+          <th>Nama Lengkap (Didekripsi)</th>
+          <th>Kontak</th>
+          <th>Berkas Lampiran</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for app in applicants %}
+        <tr>
+          <td>#{{ app.id }}</td>
+          <td><strong>{{ app.username }}</strong></td>
+          <td>
+            {% if app.has_profile and app.profile.get('full_name') %}
+              {{ app.profile.get('full_name') }}
+            {% else %}
+              <span class="note">Belum melengkapi profil</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if app.has_profile %}
+              <div>{{ app.profile.get('email') or '-' }}</div>
+              <small class="note">{{ app.profile.get('phone') or '-' }}</small>
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge">{{ app.files_count }} Berkas</span>
+          </td>
+          <td>
+            <a href="{{ url_for('main.hrd_applicant_detail', applicant_id=app.id) }}" class="btn-secondary" style="padding: 6px 12px; font-size: 13px; margin: 0;">Tinjau Pelamar &rarr;</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p>Belum ada kandidat pelamar yang terdaftar dalam sistem.</p>
+  {% endif %}
+</section>
+{% endblock %}
