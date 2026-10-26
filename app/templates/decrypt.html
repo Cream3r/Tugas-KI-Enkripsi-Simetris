@@ -1,15 +1,69 @@
 {% extends "base.html" %}
 {% block content %}
+
+  {% if decrypted_profile %}
+  <!-- Kartu Profil Inline Hasil Dekripsi Data Pribadi -->
+  <section class="card" style="border: 2px solid #27684f;">
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+      <h2>Data Pribadi Berhasil Didekripsi</h2>
+      <span class="badge" style="background: #27684f; color: white; padding: 4px 10px; border-radius: 4px;">Algoritma: {{ algorithm }}</span>
+    </div>
+    <p class="note">Identitas pelamar berhasil didekripsi menggunakan kunci unik yang Anda masukkan.</p>
+
+    <div class="profile-details">
+      <dl class="profile-grid">
+        <dt>Nama Lengkap</dt>
+        <dd><strong>{{ decrypted_profile.get('full_name') or '-' }}</strong></dd>
+
+        <dt>Tanggal Lahir</dt>
+        <dd>{{ decrypted_profile.get('birth_date') or '-' }}</dd>
+
+        <dt>Nomor Telepon</dt>
+        <dd>{{ decrypted_profile.get('phone') or '-' }}</dd>
+
+        <dt>Alamat Email</dt>
+        <dd>{{ decrypted_profile.get('email') or '-' }}</dd>
+
+        <dt>Alamat Domisili</dt>
+        <dd>{{ decrypted_profile.get('address') or '-' }}</dd>
+      </dl>
+    </div>
+
+    <div class="profile-actions" style="margin-top: 20px;">
+      <button type="button" class="btn-secondary" onclick="downloadDecryptedJSON()">Unduh File JSON Asli</button>
+      <a href="{{ url_for('main.decrypt_page') }}" class="btn-secondary">Dekripsi Berkas Lain</a>
+    </div>
+  </section>
+
+  <script id="decrypted-json-raw" type="application/json">{{ plaintext_json|safe }}</script>
+  <script>
+    function downloadDecryptedJSON() {
+      const data = document.getElementById('decrypted-json-raw').textContent;
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '{{ original_name or "personal_data.json" }}';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+  {% endif %}
+
   <section class="card">
     <h1>Kembalikan berkas asli</h1>
+    <p class="note">Unggah file <strong>.enc</strong> atau <strong>gambar terenkripsi</strong> dan masukkan kunci HEX yang sesuai untuk memulihkan file aslinya.</p>
 
-    <p class="note">Dekripsi hanya tersedia untuk berkas milik akun Anda yang masih tersimpan di aplikasi.</p><p>Unggah file <strong>.enc</strong> atau <strong>gambar terenkripsi</strong> yang sebelumnya diunduh dari aplikasi ini. Algoritma dikenali otomatis, dan file asli akan diunduh dengan nama serta ekstensi semula.</p>
     <form method="post" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".enc,.png,.jpg,.jpeg,.webp" required aria-label="Pilih file terenkripsi">
-      <button type="submit">Dekripsi & unduh</button>
+      <label for="file">Berkas terenkripsi (.enc atau gambar):</label>
+      <input type="file" id="file" name="file" accept=".enc,.png,.jpg,.jpeg,.webp" required aria-label="Pilih file terenkripsi">
+
+      <label for="key">Kunci Enkripsi (HEX):</label>
+      <input id="key" name="key" type="text" required placeholder="Masukkan kunci dalam format HEX (contoh: 32 byte untuk AES/RC4, 8 byte untuk DES)" spellcheck="false" autocomplete="off">
+
+      <button type="submit">Dekripsi sekarang</button>
     </form>
-    <p>Gunakan gambar terenkripsi yang masih utuh. Mengedit, menyimpan ulang, atau mengompres gambar dapat menghilangkan data untuk dekripsi.</p>
-    <p>File .bin lama dapat didekripsi melalui daftar file yang masih tersimpan di aplikasi. File .bin yang berdiri sendiri tidak memuat metadata dan IV untuk dekripsi AES/DES.</p>
+    <p class="note" style="margin-top: 18px;">Pastikan kunci HEX cocok dengan algoritma berkas yang diunggah. Untuk data pribadi, hasil dekripsi akan ditampilkan langsung di halaman ini.</p>
   </section>
 
 {% endblock %}

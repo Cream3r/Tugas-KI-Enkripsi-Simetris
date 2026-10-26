@@ -7,7 +7,7 @@
 <!-- Mode Edit Data Pribadi -->
 <section class="card">
   <h2>Edit data pribadi pelamar</h2>
-  <p class="note">Perbarui informasi identitas Anda. Seluruh perubahan akan dienkripsi ulang menggunakan AES, DES, dan RC4 serta dibuatkan IV (Initialization Vector) baru.</p>
+  <p class="note">Perbarui informasi identitas Anda. Seluruh data akan dienkripsi ulang menggunakan kunci acak kriptografis unik baru untuk AES, DES, dan RC4.</p>
   <form method="post" action="{{ url_for('main.edit_personal', item_id=personal_item.id) }}">
     <label for="full_name">Nama lengkap</label>
     <input id="full_name" name="full_name" value="{{ decrypted_profile.get('full_name', '') }}" required>
@@ -59,14 +59,45 @@
     </dl>
   </div>
 
-  <div style="margin-top: 16px;">
-    <span class="note">Unduh JSON asli terenkripsi:</span>
-    <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='aes') }}">AES</a>
-    <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='des') }}">DES</a>
-    <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='rc4') }}">RC4</a>
+  <!-- Dropdown Kunci Enkripsi Profil -->
+  <details class="profile-keys" style="margin-top: 20px;">
+    <summary>Kunci Enkripsi Profil</summary>
+    <div style="margin-top: 14px;">
+      <p class="note">Kunci kriptografis unik khusus untuk profil data pribadi ini (HEX):</p>
+      {% for alg, name, key_bytes, size_info in [
+        ('aes', 'AES-256-CBC', personal_item['aes_key'], '32 byte / 256 bit'),
+        ('des', 'DES-CBC', personal_item['des_key'], '8 byte / 64 bit (56 bit efektif)'),
+        ('rc4', 'RC4', personal_item['rc4_key'], '32 byte / 256 bit')
+      ] %}
+      <div class="key-row">
+        <label for="key-profile-{{ personal_item['id'] }}-{{ alg }}">{{ name }} <span class="note">· {{ size_info }}</span></label>
+        <div class="key-control">
+          <input id="key-profile-{{ personal_item['id'] }}-{{ alg }}" class="key-value" type="text" value="{{ key_bytes|hex }}" readonly spellcheck="false" autocomplete="off" aria-label="Kunci {{ name }} Profil">
+          <button type="button" class="copy-key" data-copy-target="key-profile-{{ personal_item['id'] }}-{{ alg }}" aria-label="Salin kunci {{ name }}">Salin</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+
+  <!-- Opsi Unduh Paket .enc dan JSON Asli -->
+  <div style="margin-top: 20px; border-top: 1px solid #e0e8e3; padding-top: 16px;">
+    <p class="note" style="margin-bottom: 8px;"><strong>Unduh Paket Terenkripsi (.enc):</strong></p>
+    <div class="links" style="margin-bottom: 14px;">
+      <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='aes', format='enc') }}">Unduh AES (.enc)</a>
+      <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='des', format='enc') }}">Unduh DES (.enc)</a>
+      <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='rc4', format='enc') }}">Unduh RC4 (.enc)</a>
+    </div>
+
+    <p class="note" style="margin-bottom: 8px;"><strong>Unduh JSON Asli (Didekripsi):</strong></p>
+    <div class="links">
+      <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='aes') }}">Unduh JSON (AES)</a>
+      <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='des') }}">Unduh JSON (DES)</a>
+      <a href="{{ url_for('main.download_personal', item_id=personal_item.id, algorithm='rc4') }}">Unduh JSON (RC4)</a>
+    </div>
   </div>
 
-  <div class="profile-actions">
+  <div class="profile-actions" style="margin-top: 22px;">
     <a href="{{ url_for('main.personal_page', edit=1) }}" class="btn-secondary">Edit Data</a>
     <form method="post" action="{{ url_for('main.delete_personal', item_id=personal_item.id) }}" style="display:inline;" onsubmit="return confirm('Apakah Anda yakin ingin menghapus data pribadi ini secara permanen dari server?');">
       <button type="submit" class="btn-danger">Hapus Data</button>
@@ -78,7 +109,7 @@
 <!-- Formulir Pengisian Profil Baru (Jika Belum Ada Data Pribadi) -->
 <section class="card">
   <h2>Identitas & kontak pelamar</h2>
-  <p class="note">Anda belum memiliki data pribadi tersimpan. Lengkapi formulir di bawah ini untuk menyimpan profil identitas Anda yang akan dienkripsi secara simetris.</p>
+  <p class="note">Anda belum memiliki data pribadi tersimpan. Lengkapi formulir di bawah ini untuk menyimpan profil identitas Anda yang akan dienkripsi secara simetris dengan kunci unik baru.</p>
   <form method="post" action="{{ url_for('main.save_personal') }}">
     <label for="full_name">Nama lengkap</label>
     <input id="full_name" name="full_name" required placeholder="Contoh: Budi Santoso">
@@ -100,4 +131,5 @@
 </section>
 {% endif %}
 
+<script src="{{ url_for('static', filename='keys.js') }}" defer></script>
 {% endblock %}

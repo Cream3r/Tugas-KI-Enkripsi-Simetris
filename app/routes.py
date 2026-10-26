@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import json
@@ -13,10 +14,11 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from .crypto import (
-    AES_KEY, DES_KEY, RC4_KEY,
+    AES_KEY, DES_KEY, RC4_KEY, DEFAULT_KEYS, DEFAULT_AES_KEY, DEFAULT_DES_KEY, DEFAULT_RC4_KEY,
     benchmark, decode_bytes, decrypt_aes, decrypt_des, decrypt_rc4,
-    encrypt_all, serialize_personal_data, ALGORITHMS, IMAGE_FORMATS,
-    pack_encrypted_file, encrypted_image, decrypt_export, unpack_encrypted_file
+    encrypt_all, generate_keys, serialize_personal_data, ALGORITHMS, IMAGE_FORMATS,
+    PACKAGE_MAGIC, pack_encrypted_file, encrypted_image, decrypt_export,
+    unpack_encrypted_file, extract_package_bytes
 )
 from .db import get_db
 
@@ -27,6 +29,16 @@ ALLOWED_EXTENSIONS = {
     "pdf", "doc", "docx", "xls", "xlsx",
     "mp4", "avi", "mov", "mkv", "webm"
 }
+
+
+@bp.app_template_filter("hex")
+def hex_filter(value):
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    if isinstance(value, str):
+        return value
+    return ""
+
 
 def hash_password(password, salt):
     return hashlib.pbkdf2_hmac(
@@ -61,11 +73,12 @@ def owned_file(file_id):
 def decrypt_stored_file(item, algorithm):
     with open(item[f"{algorithm}_path"], "rb") as f:
         ciphertext = f.read()
+    key = item[f"{algorithm}_key"] or DEFAULT_KEYS.get(algorithm)
     if algorithm == "aes":
-        return decrypt_aes(ciphertext, item["aes_iv"])
+        return decrypt_aes(ciphertext, item["aes_iv"], key=key)
     if algorithm == "des":
-        return decrypt_des(ciphertext, item["des_iv"])
-    return decrypt_rc4(ciphertext)
+        return decrypt_des(ciphertext, item["des_iv"], key=key)
+    return decrypt_rc4(ciphertext, key=key)
 
 
 @bp.route("/files")
@@ -80,12 +93,7 @@ def files_page():
         ).fetchall()
     finally:
         db.close()
-    keys = [
-        {"id": "aes", "name": "AES-256-CBC", "hex": AES_KEY.hex(), "size": "32 byte / 256 bit"},
-        {"id": "des", "name": "DES-CBC", "hex": DES_KEY.hex(), "size": "8 byte / 64 bit (56 bit efektif)"},
-        {"id": "rc4", "name": "RC4", "hex": RC4_KEY.hex(), "size": "32 byte / 256 bit"},
-    ]
-    response = current_app.make_response(render_template("files.html", files=files, encryption_keys=keys))
+    response = current_app.make_response(render_template("files.html", files=files))
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -110,7 +118,8 @@ def personal_page():
         decrypted_profile = None
         if personal_item:
             try:
-                raw_json = decrypt_aes(personal_item["aes_data"], personal_item["aes_iv"])
+                key = personal_item["aes_key"] or DEFAULT_AES_KEY
+                raw_json = decrypt_aes(personal_item["aes_data"], personal_item["aes_iv"], key=key)
                 decrypted_profile = json.loads(raw_json.decode("utf-8"))
             except Exception:
                 decrypted_profile = {}
@@ -211,12 +220,13 @@ def save_personal():
             "email": request.form.get("email", "").strip(),
         }
 
-        encrypted = encrypt_all(serialize_personal_data(data))
+        keys = generate_keys()
+        encrypted = encrypt_all(serialize_personal_data(data), keys=keys)
 
         db.execute(
             """INSERT INTO personal_data
-            (user_id, aes_data, des_data, rc4_data, aes_iv, des_iv)
-            VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, aes_data, des_data, rc4_data, aes_iv, des_iv, aes_key, des_key, rc4_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 current_user_id(),
                 encrypted["aes"],
@@ -224,13 +234,16 @@ def save_personal():
                 encrypted["rc4"],
                 encrypted["aes_iv"],
                 encrypted["des_iv"],
+                encrypted["aes_key"],
+                encrypted["des_key"],
+                encrypted["rc4_key"],
             )
         )
         db.commit()
     finally:
         db.close()
 
-    flash("Data pribadi berhasil disimpan menggunakan AES, DES, dan RC4.")
+    flash("Data pribadi berhasil disimpan menggunakan kunci enkripsi unik.")
     return redirect(url_for("main.personal_page"))
 
 @bp.route("/personal/<int:item_id>/edit", methods=["GET", "POST"])
@@ -259,12 +272,14 @@ def edit_personal(item_id):
                 "email": request.form.get("email", "").strip(),
             }
 
-            encrypted = encrypt_all(serialize_personal_data(data))
+            keys = generate_keys()
+            encrypted = encrypt_all(serialize_personal_data(data), keys=keys)
 
             db.execute(
                 """UPDATE personal_data
                 SET aes_data = ?, des_data = ?, rc4_data = ?,
-                    aes_iv = ?, des_iv = ?, created_at = CURRENT_TIMESTAMP
+                    aes_iv = ?, des_iv = ?, aes_key = ?, des_key = ?, rc4_key = ?,
+                    created_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?""",
                 (
                     encrypted["aes"],
@@ -272,16 +287,20 @@ def edit_personal(item_id):
                     encrypted["rc4"],
                     encrypted["aes_iv"],
                     encrypted["des_iv"],
+                    encrypted["aes_key"],
+                    encrypted["des_key"],
+                    encrypted["rc4_key"],
                     item_id,
                     current_user_id(),
                 )
             )
             db.commit()
-            flash("Data pribadi berhasil diperbarui dan dienkripsi ulang dengan AES, DES, dan RC4.")
+            flash("Data pribadi berhasil diperbarui dan dienkripsi ulang dengan kunci unik baru.")
             return redirect(url_for("main.personal_page"))
 
         try:
-            raw_json = decrypt_aes(item["aes_data"], item["aes_iv"])
+            key = item["aes_key"] or DEFAULT_AES_KEY
+            raw_json = decrypt_aes(item["aes_data"], item["aes_iv"], key=key)
             decrypted_profile = json.loads(raw_json.decode("utf-8"))
         except Exception:
             decrypted_profile = {}
@@ -323,6 +342,7 @@ def delete_personal(item_id):
     return redirect(url_for("main.personal_page"))
 
 @bp.route("/personal/<int:item_id>/<algorithm>")
+@bp.route("/personal/<int:item_id>/<algorithm>/encrypted")
 def download_personal(item_id, algorithm):
     if not logged_in():
         return redirect(url_for("main.login"))
@@ -340,12 +360,33 @@ def download_personal(item_id, algorithm):
     if not item:
         return "Data tidak ditemukan", 404
 
+    is_enc = request.args.get("format") == "enc" or request.path.endswith("/encrypted")
+    key = item[f"{algorithm}_key"] or DEFAULT_KEYS.get(algorithm)
+
+    if is_enc:
+        ciphertext = item[f"{algorithm}_data"]
+        iv = item[f"{algorithm}_iv"] if algorithm in {"aes", "des"} else b""
+        package = pack_encrypted_file(
+            ciphertext, algorithm,
+            f"personal_data_{item_id}.json",
+            "application/json",
+            iv=iv, key=key
+        )
+        response = send_file(
+            io.BytesIO(package), as_attachment=True,
+            download_name=f"personal_data_{item_id}_{algorithm}.enc",
+            mimetype="application/octet-stream"
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     if algorithm == "aes":
-        plaintext = decrypt_aes(item["aes_data"], item["aes_iv"])
+        plaintext = decrypt_aes(item["aes_data"], item["aes_iv"], key=key)
     elif algorithm == "des":
-        plaintext = decrypt_des(item["des_data"], item["des_iv"])
+        plaintext = decrypt_des(item["des_data"], item["des_iv"], key=key)
     else:
-        plaintext = decrypt_rc4(item["rc4_data"])
+        plaintext = decrypt_rc4(item["rc4_data"], key=key)
 
     response = send_file(io.BytesIO(plaintext), as_attachment=True,
                          download_name=f"personal_data_{item_id}_{algorithm}.json",
@@ -377,7 +418,8 @@ def upload():
         flash("File kosong.")
         return redirect(url_for("main.index"))
 
-    encrypted = encrypt_all(data)
+    keys = generate_keys()
+    encrypted = encrypt_all(data, keys=keys)
 
     file_id = secrets.token_hex(16)
     directory = os.path.join(encrypted_root(), file_id)
@@ -400,6 +442,9 @@ def upload():
         "original_size": len(data),
         "aes_iv": encrypted["aes_iv"].hex(),
         "des_iv": encrypted["des_iv"].hex(),
+        "aes_key": encrypted["aes_key"].hex(),
+        "des_key": encrypted["des_key"].hex(),
+        "rc4_key": encrypted["rc4_key"].hex(),
     }
 
     with open(os.path.join(directory, "metadata.json"), "w", encoding="utf-8") as f:
@@ -409,8 +454,8 @@ def upload():
     db.execute(
         """INSERT INTO files
         (user_id, original_name, mime_type, aes_path, des_path, rc4_path,
-         aes_iv, des_iv, original_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         aes_iv, des_iv, aes_key, des_key, rc4_key, original_size)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             current_user_id(),
             filename,
@@ -420,13 +465,16 @@ def upload():
             rc4_path,
             encrypted["aes_iv"],
             encrypted["des_iv"],
+            encrypted["aes_key"],
+            encrypted["des_key"],
+            encrypted["rc4_key"],
             len(data),
         )
     )
     db.commit()
     db.close()
 
-    flash("File berhasil dienkripsi dengan AES, DES, dan RC4.")
+    flash("File berhasil dienkripsi dengan kunci unik per-file (AES, DES, RC4).")
     return redirect(url_for("main.files_page"))
 
 @bp.route("/file/<int:file_id>/<algorithm>")
@@ -523,7 +571,8 @@ def download_encrypted_file(file_id, algorithm):
         name = secure_filename(item["original_name"]) or "file"
         extension = name.rsplit(".", 1)[-1].lower()
         iv = item[f"{algorithm}_iv"] if algorithm in {"aes", "des"} else b""
-        package = pack_encrypted_file(ciphertext, algorithm, name, item["mime_type"], iv)
+        key = item[f"{algorithm}_key"] or DEFAULT_KEYS.get(algorithm)
+        package = pack_encrypted_file(ciphertext, algorithm, name, item["mime_type"], iv, key=key)
         is_image = output_format == "image" and extension in IMAGE_FORMATS
         if is_image:
             original = decrypt_stored_file(item, algorithm)
@@ -549,46 +598,121 @@ def download_encrypted_file(file_id, algorithm):
 def decrypt_page():
     if not logged_in():
         return redirect(url_for("main.login"))
+
+    decrypted_profile = None
+    plaintext_json = None
+    original_name = None
+    algorithm = None
+
     if request.method == "POST":
         uploaded = request.files.get("file")
         if not uploaded or not uploaded.filename:
             flash("Pilih file terenkripsi terlebih dahulu.")
             return redirect(url_for("main.decrypt_page"))
+
+        key_input = request.form.get("key", "").strip()
+
         try:
             exported = uploaded.read()
-            package = unpack_encrypted_file(exported)
-            algorithm = package["algorithm"]
-            db = get_db()
-            try:
-                candidates = db.execute("SELECT * FROM files WHERE user_id = ?", (current_user_id(),)).fetchall()
-            finally:
-                db.close()
-            owned = False
-            for item in candidates:
-                iv = item[f"{algorithm}_iv"] if algorithm in {"aes", "des"} else b""
-                if iv != package["iv"]:
-                    continue
+            if not exported:
+                raise ValueError("File terenkripsi kosong.")
+
+            raw_pkg = extract_package_bytes(exported)
+            start = len(PACKAGE_MAGIC)
+            signature, payload = raw_pkg[start:start+32], raw_pkg[start+32:]
+            meta = json.loads(payload)
+            alg = meta.get("algorithm")
+            if alg not in ALGORITHMS:
+                raise ValueError("Algoritma dalam berkas tidak didukung.")
+
+            key_bytes = None
+            if key_input:
                 try:
-                    with open(item[f"{algorithm}_path"], "rb") as source:
-                        if secrets.compare_digest(source.read(), package["ciphertext"]):
-                            owned = True
+                    key_bytes = bytes.fromhex(key_input)
+                except ValueError:
+                    flash("Format kunci HEX tidak valid. Harap masukkan karakter heksadesimal yang benar.")
+                    return redirect(url_for("main.decrypt_page"))
+
+                req_len = {"aes": 32, "des": 8, "rc4": 32}
+                if len(key_bytes) != req_len[alg]:
+                    flash(f"Panjang kunci HEX tidak sesuai untuk {alg.upper()}. Dibutuhkan {req_len[alg]} byte ({req_len[alg]*2} karakter HEX).")
+                    return redirect(url_for("main.decrypt_page"))
+            else:
+                # Key not provided in form: fallback lookup for owned items (automated tests/convenience)
+                db = get_db()
+                try:
+                    candidates = db.execute("SELECT * FROM files WHERE user_id = ?", (current_user_id(),)).fetchall()
+                    personal_candidates = db.execute("SELECT * FROM personal_data WHERE user_id = ?", (current_user_id(),)).fetchall()
+                finally:
+                    db.close()
+
+                target_iv = base64.b64decode(meta["iv"]) if meta.get("iv") else b""
+                target_cipher = base64.b64decode(meta["ciphertext"])
+
+                found_key = None
+                for c in candidates:
+                    iv = c[f"{alg}_iv"] if alg in {"aes", "des"} else b""
+                    if iv == target_iv:
+                        try:
+                            with open(c[f"{alg}_path"], "rb") as source:
+                                if secrets.compare_digest(source.read(), target_cipher):
+                                    found_key = c[f"{alg}_key"] or DEFAULT_KEYS.get(alg)
+                                    break
+                        except OSError:
+                            pass
+
+                if not found_key:
+                    for p in personal_candidates:
+                        iv = p[f"{alg}_iv"] if alg in {"aes", "des"} else b""
+                        if iv == target_iv and secrets.compare_digest(p[f"{alg}_data"], target_cipher):
+                            found_key = p[f"{alg}_key"] or DEFAULT_KEYS.get(alg)
                             break
-                except OSError:
-                    continue
-            if not owned:
-                return "Berkas ini bukan milik akun Anda atau tidak lagi tersimpan.", 403
-            plaintext, original_name, mimetype = decrypt_export(exported)
+
+                if not found_key:
+                    return "Berkas ini bukan milik akun Anda atau tidak lagi tersimpan. Harap masukkan kunci dekripsi HEX.", 403
+
+                key_bytes = found_key
+
+            plaintext, orig_name, mime = decrypt_export(exported, key=key_bytes)
+
+            # Check if this is personal data
+            is_personal = False
+            parsed_profile = None
+            if orig_name.startswith("personal_data") or mime == "application/json":
+                try:
+                    parsed = json.loads(plaintext.decode("utf-8"))
+                    if isinstance(parsed, dict) and any(k in parsed for k in ("full_name", "birth_date", "email", "phone", "address")):
+                        is_personal = True
+                        parsed_profile = parsed
+                except Exception:
+                    is_personal = False
+
+            if is_personal:
+                return render_template(
+                    "decrypt.html",
+                    decrypted_profile=parsed_profile,
+                    plaintext_json=plaintext.decode("utf-8"),
+                    original_name=orig_name,
+                    algorithm=alg.upper()
+                )
+
+            response = send_file(
+                io.BytesIO(plaintext), as_attachment=True,
+                download_name=secure_filename(orig_name) or "decrypted_file",
+                mimetype=mime
+            )
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+
         except ValueError as exc:
-            flash(str(exc))
+            msg = str(exc)
+            if "Kunci dekripsi salah" in msg or "rusak" in msg or "berbeda" in msg:
+                flash("Kunci dekripsi salah atau berkas rusak.")
+            else:
+                flash(msg)
             return redirect(url_for("main.decrypt_page"))
-        response = send_file(
-            io.BytesIO(plaintext), as_attachment=True,
-            download_name=secure_filename(original_name) or "decrypted_file",
-            mimetype=mimetype
-        )
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+
     return render_template("decrypt.html")
 
 @bp.route("/benchmark", methods=["GET", "POST"])
@@ -641,7 +765,6 @@ def developer_evaluation():
         return redirect(url_for("main.login"))
     if not is_developer():
         return render_template("developer_denied.html"), 403
-    # Request-specific limit; normal candidate uploads keep their existing limit.
     request.max_content_length = MAX_INPUT + 1024 * 1024
     token = session.setdefault("evaluation_csrf", secrets.token_urlsafe(32))
     report, error = None, None
