@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="{{ url_for('main.hrd_dashboard') }}" style="text-decoration: none;">&larr; Kembali ke Portal HRD</a></p>
+
+<h1>Tinjauan Lamaran: {{ profile.get('full_name') or applicant.username }}</h1>
+<p class="note">ID Pelamar: #{{ applicant.id }} · Akun: @{{ applicant.username }}</p>
+
+<!-- Kartu Profil Pelamar -->
+<section class="card">
+  <h2>Data Pribadi Pelamar</h2>
+  {% if personal_item %}
+  <div class="profile-details">
+    <dl class="profile-grid">
+      <dt>Nama Lengkap</dt>
+      <dd><strong>{{ profile.get('full_name') or '-' }}</strong></dd>
+
+      <dt>Tanggal Lahir</dt>
+      <dd>{{ profile.get('birth_date') or '-' }}</dd>
+
+      <dt>Nomor Telepon</dt>
+      <dd>{{ profile.get('phone') or '-' }}</dd>
+
+      <dt>Alamat Email</dt>
+      <dd>{{ profile.get('email') or '-' }}</dd>
+
+      <dt>Alamat Domisili</dt>
+      <dd>{{ profile.get('address') or '-' }}</dd>
+
+      <dt>Terdaftar Sejak</dt>
+      <dd class="note">{{ personal_item.created_at }}</dd>
+    </dl>
+  </div>
+  {% else %}
+  <p class="note">Pelamar belum mengisi formulir data pribadi.</p>
+  {% endif %}
+</section>
+
+<!-- Kartu Berkas Terunggah -->
+<section class="panel">
+  <h2>Berkas Dokumen Pendukung</h2>
+  <p class="note">Seluruh berkas di bawah ini disimpan terenkripsi di server (AES, DES, RC4) dan didekripsi otomatis khusus untuk tinjauan HRD.</p>
+
+  {% if files %}
+    {% for file in files %}
+    {% set extension = file['original_name'].rsplit('.', 1)[-1]|lower %}
+    {% set is_image = extension in ['png', 'jpg', 'jpeg', 'webp'] %}
+    <article style="background: #fdfdfd; border: 1px solid #d9e2dc; margin-bottom: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <h3>{{ file['original_name'] }}</h3>
+        <span class="note">{{ file['original_size'] }} byte · {{ file['created_at'] }}</span>
+      </div>
+
+      <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+        <span class="note">Buka Dokumen Asli (Didekripsi):</span>
+        <a href="{{ url_for('main.hrd_download_applicant_file', applicant_id=applicant.id, file_id=file['id'], algorithm='aes') }}" class="btn-secondary" style="padding: 6px 12px; font-size: 13px; margin: 0;">Buka (AES)</a>
+        <a href="{{ url_for('main.hrd_download_applicant_file', applicant_id=applicant.id, file_id=file['id'], algorithm='des') }}" class="btn-secondary" style="padding: 6px 12px; font-size: 13px; margin: 0;">Buka (DES)</a>
+        <a href="{{ url_for('main.hrd_download_applicant_file', applicant_id=applicant.id, file_id=file['id'], algorithm='rc4') }}" class="btn-secondary" style="padding: 6px 12px; font-size: 13px; margin: 0;">Buka (RC4)</a>
+      </div>
+
+      {% if is_image %}
+      <details style="margin-top: 14px;">
+        <summary>Pratinjau Gambar</summary>
+        <img loading="lazy" src="{{ url_for('main.hrd_download_applicant_file', applicant_id=applicant.id, file_id=file['id'], algorithm='aes', inline=1) }}" alt="Pratinjau Berkas Gambar Pelamar">
+      </details>
+      {% endif %}
+    </article>
+    {% endfor %}
+  {% else %}
+  <p>Pelamar belum mengunggah dokumen apa pun.</p>
+  {% endif %}
+</section>
+{% endblock %}

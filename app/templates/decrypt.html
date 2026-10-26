@@ -52,18 +52,18 @@
 
   <section class="card">
     <h1>Kembalikan berkas asli</h1>
-    <p class="note">Unggah file <strong>.enc</strong> atau <strong>gambar terenkripsi</strong> dan masukkan kunci HEX yang sesuai untuk memulihkan file aslinya.</p>
+    <p class="note">Unggah file <strong>.enc</strong> atau <strong>gambar terenkripsi</strong> lalu masukkan kata sandi/PIN berkas atau kunci HEX untuk memulihkan file aslinya.</p>
 
     <form method="post" enctype="multipart/form-data">
       <label for="file">Berkas terenkripsi (.enc atau gambar):</label>
       <input type="file" id="file" name="file" accept=".enc,.png,.jpg,.jpeg,.webp" required aria-label="Pilih file terenkripsi">
 
-      <label for="key">Kunci Enkripsi (HEX):</label>
-      <input id="key" name="key" type="text" required placeholder="Masukkan kunci dalam format HEX (contoh: 32 byte untuk AES/RC4, 8 byte untuk DES)" spellcheck="false" autocomplete="off">
+      <label for="key">Kata Sandi / PIN Berkas atau Kunci HEX:</label>
+      <input id="key" name="key" type="text" required placeholder="Masukkan kata sandi/PIN pengaman atau string kunci HEX" spellcheck="false" autocomplete="off">
 
       <button type="submit">Dekripsi sekarang</button>
     </form>
-    <p class="note" style="margin-top: 18px;">Pastikan kunci HEX cocok dengan algoritma berkas yang diunggah. Untuk data pribadi, hasil dekripsi akan ditampilkan langsung di halaman ini.</p>
+    <p class="note" style="margin-top: 18px;">Sistem mendukung dekripsi menggunakan kata sandi/PIN pengaman (KDF PBKDF2) maupun kunci HEX langsung. Untuk data pribadi, hasil dekripsi ditampilkan langsung di halaman ini.</p>
   </section>
 
 {% endblock %}

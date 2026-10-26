@@ -6,6 +6,8 @@
     <h2>Simpan berkas lamaran</h2><p class="note">Untuk pelamar kerja: simpan pindaian KTP, CV dan dokumen Word/Excel/PDF, atau video perkenalan. Berkas ini privat karena dapat mengungkap identitas, kontak, riwayat kerja, dan wajah Anda.</p>
     <form action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data">
       <input type="file" name="file" required aria-label="Pilih file untuk dienkripsi" accept=".png,.jpg,.jpeg,.webp,.pdf,.doc,.docx,.xls,.xlsx,.mp4,.avi,.mov,.mkv,.webm">
+      <label for="passphrase">Kata Sandi / PIN Berkas <span class="note">(Opsional: kunci AES, DES, dan RC4 akan diturunkan dari kata sandi ini)</span></label>
+      <input id="passphrase" name="passphrase" type="password" placeholder="Contoh: PIN atau kata sandi pengaman" autocomplete="new-password">
       <button type="submit">Enkripsi & simpan</button>
     </form>
     <p class="note">Setiap file menggunakan 1 set kunci acak unik (AES-256, DES, RC4). Simpan atau salin kunci untuk mendekripsi berkas nantinya.</p>

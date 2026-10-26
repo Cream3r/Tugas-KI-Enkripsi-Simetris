@@ -44,25 +44,45 @@ def generate_keys():
     }
 
 
+def derive_keys_from_passphrase(passphrase: str, salt: bytes = None):
+    """Derive AES (32 bytes), DES (8 bytes), and RC4 (32 bytes) keys from user passphrase/PIN via PBKDF2."""
+    if not passphrase:
+        raise ValueError("Passphrase tidak boleh kosong.")
+    if salt is None:
+        salt = get_random_bytes(16)
+    # PBKDF2-HMAC-SHA256 with 100,000 iterations deriving 72 bytes total
+    derived = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, 100_000, dklen=72)
+    return {
+        "aes": derived[:32],      # 32 byte (256 bit)
+        "des": derived[32:40],    # 8 byte (64 bit)
+        "rc4": derived[40:72],    # 32 byte (256 bit)
+        "salt": salt,
+    }
+
+
 def derive_mac_key(key):
     """Derive HMAC integrity key from cipher key."""
     return hashlib.sha256(key + b"vault-export-v1-mac").digest()
 
 
-def pack_encrypted_file(ciphertext, algorithm, original_name, mime_type, iv=b"", key=None):
+def pack_encrypted_file(ciphertext, algorithm, original_name, mime_type, iv=b"", key=None, salt=None):
     """Portable ciphertext, metadata and integrity tag derived from the item's key."""
     if algorithm not in ALGORITHMS:
         raise ValueError("Algoritma tidak valid.")
     if key is None:
         key = DEFAULT_KEYS.get(algorithm)
-    payload = json.dumps({
+    meta = {
         "version": 1,
         "algorithm": algorithm,
         "original_name": original_name,
         "mime_type": mime_type or "application/octet-stream",
         "iv": encode_bytes(iv),
         "ciphertext": encode_bytes(ciphertext),
-    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    }
+    if salt:
+        meta["salt"] = encode_bytes(salt)
+
+    payload = json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(derive_mac_key(key), payload, hashlib.sha256).digest()
     return PACKAGE_MAGIC + signature + payload
 
@@ -82,7 +102,7 @@ def extract_package_bytes(data):
     return data
 
 
-def unpack_encrypted_file(data, key=None):
+def unpack_encrypted_file(data, key=None, passphrase=None):
     """Read either an .enc export or an unchanged exported encrypted image with key verification."""
     data = extract_package_bytes(data)
     start = len(PACKAGE_MAGIC)
@@ -99,11 +119,23 @@ def unpack_encrypted_file(data, key=None):
             raise ValueError("Tipe file tidak valid.")
         item["ciphertext"] = base64.b64decode(item["ciphertext"], validate=True)
         item["iv"] = base64.b64decode(item["iv"], validate=True)
+        if item.get("salt"):
+            item["salt"] = base64.b64decode(item["salt"], validate=True)
+        else:
+            item["salt"] = None
+
         required_iv = {"aes": AES.block_size, "des": DES.block_size, "rc4": 0}[algorithm]
         if len(item["iv"]) != required_iv:
             raise ValueError("IV tidak valid.")
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("Metadata file terenkripsi tidak valid.") from exc
+
+    # If passphrase is provided instead of raw key, derive key
+    if passphrase and key is None:
+        salt = item.get("salt") or b"vault-default-salt"
+        derived = derive_keys_from_passphrase(passphrase, salt=salt)
+        key = derived[algorithm]
+        item["derived_key"] = key
 
     # Validate HMAC signature
     if key is not None:
@@ -119,7 +151,7 @@ def unpack_encrypted_file(data, key=None):
     return item
 
 
-def decrypt_export(data, key=None):
+def decrypt_export(data, key=None, passphrase=None):
     data = extract_package_bytes(data)
     start = len(PACKAGE_MAGIC)
     payload = data[start+32:]
@@ -129,17 +161,19 @@ def decrypt_export(data, key=None):
     except Exception:
         algorithm = None
 
-    if key is None and algorithm in DEFAULT_KEYS:
+    if key is None and passphrase is None and algorithm in DEFAULT_KEYS:
         key = DEFAULT_KEYS[algorithm]
 
-    item = unpack_encrypted_file(data, key=key)
+    item = unpack_encrypted_file(data, key=key, passphrase=passphrase)
+    actual_key = key or item.get("derived_key") or DEFAULT_KEYS.get(item["algorithm"])
+
     alg = item["algorithm"]
     if alg == "aes":
-        plaintext = decrypt_aes(item["ciphertext"], item["iv"], key=key)
+        plaintext = decrypt_aes(item["ciphertext"], item["iv"], key=actual_key)
     elif alg == "des":
-        plaintext = decrypt_des(item["ciphertext"], item["iv"], key=key)
+        plaintext = decrypt_des(item["ciphertext"], item["iv"], key=actual_key)
     else:
-        plaintext = decrypt_rc4(item["ciphertext"], key=key)
+        plaintext = decrypt_rc4(item["ciphertext"], key=actual_key)
     return plaintext, item["original_name"], item["mime_type"]
 
 
@@ -232,6 +266,7 @@ def encrypt_all(data, keys=None):
         "aes_key": keys["aes"],
         "des_key": keys["des"],
         "rc4_key": keys["rc4"],
+        "salt": keys.get("salt"),
     }
 
 

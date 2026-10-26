@@ -24,6 +24,9 @@
     <label for="address">Alamat</label>
     <textarea id="address" name="address">{{ decrypted_profile.get('address', '') }}</textarea>
 
+    <label for="passphrase">Kata Sandi / PIN Profil <span class="note">(Opsional: kunci AES, DES, dan RC4 akan diturunkan dari kata sandi ini)</span></label>
+    <input id="passphrase" name="passphrase" type="password" placeholder="Contoh: PIN atau kata sandi pengaman" autocomplete="new-password">
+
     <div class="profile-actions">
       <button type="submit">Simpan Perubahan & Enkripsi Ulang</button>
       <a href="{{ url_for('main.personal_page') }}" class="btn-secondary">Batal</a>
@@ -125,6 +128,9 @@
 
     <label for="address">Alamat</label>
     <textarea id="address" name="address" placeholder="Alamat domisili lengkap"></textarea>
+
+    <label for="passphrase">Kata Sandi / PIN Profil <span class="note">(Opsional: kunci AES, DES, dan RC4 akan diturunkan dari kata sandi ini)</span></label>
+    <input id="passphrase" name="passphrase" type="password" placeholder="Contoh: PIN atau kata sandi pengaman" autocomplete="new-password">
 
     <button type="submit">Enkripsi & simpan</button>
   </form>
