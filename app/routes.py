@@ -232,6 +232,165 @@ def logout():
     session.clear()
     return redirect(url_for("main.login"))
 
+
+@bp.route("/account", methods=["GET"])
+def account_page():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    db = get_db()
+    try:
+        user = db.execute("SELECT id, username, role FROM users WHERE id = ?", (current_user_id(),)).fetchone()
+        if not user:
+            session.clear()
+            return redirect(url_for("main.login"))
+
+        files_count = db.execute(
+            "SELECT COUNT(*) FROM files WHERE user_id = ?", (current_user_id(),)
+        ).fetchone()[0]
+
+        has_personal = db.execute(
+            "SELECT id FROM personal_data WHERE user_id = ?", (current_user_id(),)
+        ).fetchone() is not None
+    finally:
+        db.close()
+
+    return render_template(
+        "account.html",
+        user=user,
+        files_count=files_count,
+        has_personal=has_personal
+    )
+
+
+@bp.route("/account/update", methods=["POST"])
+def account_update():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    new_username = request.form.get("username", "").strip()
+    current_password = request.form.get("current_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+
+    if not new_username:
+        flash("Username tidak boleh kosong.")
+        return redirect(url_for("main.account_page"))
+
+    if not current_password:
+        flash("Password saat ini wajib diisi untuk mengonfirmasi perubahan.")
+        return redirect(url_for("main.account_page"))
+
+    db = get_db()
+    try:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (current_user_id(),)).fetchone()
+        if not user:
+            session.clear()
+            return redirect(url_for("main.login"))
+
+        # Verify current password
+        salt = bytes.fromhex(user["password_salt"])
+        expected = bytes.fromhex(user["password_hash"])
+        if not secrets.compare_digest(hash_password(current_password, salt), expected):
+            flash("Password saat ini salah. Perubahan kredensial dibatalkan.")
+            return redirect(url_for("main.account_page"))
+
+        # Check if username is being changed and is already taken
+        if new_username != user["username"]:
+            taken = db.execute(
+                "SELECT id FROM users WHERE username = ? AND id != ?",
+                (new_username, current_user_id())
+            ).fetchone()
+            if taken:
+                flash("Username tersebut sudah digunakan oleh akun lain. Silakan pilih username lain.")
+                return redirect(url_for("main.account_page"))
+
+        # Check if password is being changed
+        if new_password or confirm_password:
+            if len(new_password) < 8:
+                flash("Password baru minimal 8 karakter.")
+                return redirect(url_for("main.account_page"))
+            if new_password != confirm_password:
+                flash("Konfirmasi password baru tidak cocok.")
+                return redirect(url_for("main.account_page"))
+
+            new_salt = secrets.token_bytes(16)
+            new_hash = hash_password(new_password, new_salt)
+            db.execute(
+                "UPDATE users SET username = ?, password_hash = ?, password_salt = ? WHERE id = ?",
+                (new_username, new_hash.hex(), new_salt.hex(), current_user_id())
+            )
+        else:
+            db.execute(
+                "UPDATE users SET username = ? WHERE id = ?",
+                (new_username, current_user_id())
+            )
+
+        db.commit()
+        session["username"] = new_username
+        flash("Informasi akun Anda berhasil diperbarui.")
+    finally:
+        db.close()
+
+    return redirect(url_for("main.account_page"))
+
+
+@bp.route("/account/delete", methods=["POST"])
+def account_delete():
+    if not logged_in():
+        return redirect(url_for("main.login"))
+
+    confirm_password = request.form.get("confirm_delete_password", "")
+    if not confirm_password:
+        flash("Password wajib diisi untuk mengonfirmasi penghapusan akun.")
+        return redirect(url_for("main.account_page"))
+
+    uid = current_user_id()
+    db = get_db()
+    try:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+        if not user:
+            session.clear()
+            return redirect(url_for("main.login"))
+
+        # Verify password
+        salt = bytes.fromhex(user["password_salt"])
+        expected = bytes.fromhex(user["password_hash"])
+        if not secrets.compare_digest(hash_password(confirm_password, salt), expected):
+            flash("Password verifikasi salah. Akun tidak dihapus.")
+            return redirect(url_for("main.account_page"))
+
+        # 1. Delete physical encrypted files from disk
+        files = db.execute("SELECT * FROM files WHERE user_id = ?", (uid,)).fetchall()
+        root = encrypted_root()
+        for item in files:
+            for k in ("aes_path", "des_path", "rc4_path"):
+                p = item[k]
+                if p and os.path.isabs(p) and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            if item["aes_path"]:
+                file_dir = os.path.abspath(os.path.dirname(item["aes_path"]))
+                try:
+                    if os.path.commonpath([root, file_dir]) == root and file_dir != root and os.path.isdir(file_dir):
+                        shutil.rmtree(file_dir, ignore_errors=True)
+                except (ValueError, OSError):
+                    pass
+
+        # 2. Delete database records
+        db.execute("DELETE FROM files WHERE user_id = ?", (uid,))
+        db.execute("DELETE FROM personal_data WHERE user_id = ?", (uid,))
+        db.execute("DELETE FROM users WHERE id = ?", (uid,))
+        db.commit()
+
+        session.clear()
+        flash("Akun Anda beserta seluruh berkas dan data pribadi telah berhasil dihapus secara permanen.")
+        return redirect(url_for("main.login"))
+    finally:
+        db.close()
+
 @bp.route("/personal", methods=["POST"])
 def save_personal():
     if not logged_in():

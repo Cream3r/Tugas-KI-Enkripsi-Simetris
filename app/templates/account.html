@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="account-container" style="max-width: 680px; margin: 0 auto;">
+  <h1>Pengaturan Akun</h1>
+  <p class="note">Kelola kredensial akun login dan preferensi keamanan Anda.</p>
+
+  <div class="card">
+    <h2>Informasi Akun</h2>
+    <div style="display: grid; grid-template-columns: 160px 1fr; gap: 12px; font-size: 15px; margin-top: 12px;">
+      <strong>Peran Akun:</strong>
+      <span>
+        {% if user.role == 'hrd' %}
+          <span class="badge">Tim HRD / Recruiter</span>
+        {% else %}
+          <span class="badge">Pelamar (Candidate)</span>
+        {% endif %}
+      </span>
+
+      <strong>Jumlah Berkas:</strong>
+      <span>{{ files_count }} berkas tersimpan di brankas</span>
+
+      <strong>Data Pribadi:</strong>
+      <span>{{ 'Sudah dilengkapi' if has_personal else 'Belum diisi' }}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Ubah Username & Password</h2>
+    <p class="note">Perbarui nama pengguna atau kata sandi akun Anda. Password saat ini wajib dimasukkan untuk memverifikasi tindakan.</p>
+
+    <form method="post" action="{{ url_for('main.account_update') }}">
+      <label for="username">Username Baru
+        <span class="note">Nama pengguna untuk login ke sistem.</span>
+      </label>
+      <input type="text" id="username" name="username" value="{{ user.username }}" required autocomplete="username">
+
+      <details style="margin-top: 18px; margin-bottom: 18px;">
+        <summary>Ingin mengubah password? Klik di sini</summary>
+        <div style="padding-top: 10px;">
+          <label for="new_password">Password Baru
+            <span class="note">Minimal 8 karakter. Kosongkan jika tidak ingin mengubah password.</span>
+          </label>
+          <input type="password" id="new_password" name="new_password" placeholder="Masukkan password baru" autocomplete="new-password">
+
+          <label for="confirm_password">Konfirmasi Password Baru</label>
+          <input type="password" id="confirm_password" name="confirm_password" placeholder="Ulangi password baru" autocomplete="new-password">
+        </div>
+      </details>
+
+      <div style="border-top: 1px solid #dfe7e2; margin-top: 18px; padding-top: 14px;">
+        <label for="current_password">Password Saat Ini (Wajib)
+          <span class="note">Diperlukan untuk memverifikasi identitas Anda sebelum perubahan disimpan.</span>
+        </label>
+        <input type="password" id="current_password" name="current_password" required placeholder="Masukkan password akun Anda saat ini" autocomplete="current-password">
+      </div>
+
+      <button type="submit">Simpan Perubahan Akun</button>
+    </form>
+  </div>
+
+  <div class="card" style="border: 1px solid #d9a6a0; background: #fffdfd;">
+    <h2 style="color: #991b1b;">Zona Bahaya: Hapus Akun</h2>
+    <p class="note" style="color: #812d22;">
+      Tindakan ini bersifat <strong>permanen dan tidak dapat dibatalkan</strong>. Jika Anda menghapus akun ini, seluruh berkas lamaran fisik terenkripsi dari server, rekaman basis data identitas pribadi, dan kredensial login Anda akan segera dihapus selamanya dari sistem.
+    </p>
+
+    <form method="post" action="{{ url_for('main.account_delete') }}" onsubmit="return confirm('PERINGATAN TERAKHIR: Apakah Anda benar-benar yakin ingin menghapus akun Anda secara permanen? Seluruh berkas terenkripsi dan data pribadi Anda akan segera dihapus selamanya dari server!');">
+      <label for="confirm_delete_password" style="color: #812d22;">Konfirmasi Password untuk Menghapus Akun
+        <span class="note">Masukkan password akun Anda untuk mengonfirmasi penghapusan permanen.</span>
+      </label>
+      <input type="password" id="confirm_delete_password" name="confirm_delete_password" required placeholder="Password akun saat ini" autocomplete="current-password">
+
+      <button type="submit" class="btn-danger" style="margin-top: 16px;">Hapus Akun Saya Secara Permanen</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
